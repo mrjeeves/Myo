@@ -6,8 +6,10 @@
 //! args, env, cwd, health URL), the loopback ports, the internal-auth token
 //! minter, and the one-call brain↔MyOwnLLM wiring.
 //!
-//! Ports: Odysseus on `:7000`; Myo's owned MyOwnLLM on a private `:11473` (not
-//! MyOwnLLM's shared `:1473`, so Myo never collides with a user's own engine).
+//! Ports: Myo owns *both* engines on **private** ports — Odysseus on `:17000`
+//! (not the usual `:7000`) and MyOwnLLM on `:11473` (not the shared `:1473`) —
+//! so it never attaches to a user's own / orphaned instance (mismatched token →
+//! 403, or stale engine → 404).
 
 use std::path::PathBuf;
 
@@ -15,8 +17,14 @@ use anyhow::Result;
 
 use crate::brain::BrainClient;
 
-/// Odysseus (the brain) loopback port.
-pub const ODYSSEUS_PORT: u16 = 7000;
+/// Myo's **private** Odysseus (brain) port — deliberately *not* Odysseus's
+/// usual `:7000`. Myo spawns and owns its own brain here (with its persisted
+/// internal token), so it never attaches to a *foreign* Odysseus on `:7000` — a
+/// user's own dev instance, or one orphaned by a Ctrl-C'd `just dev` — whose
+/// token wouldn't match and which 403'd every authenticated call. An orphan of
+/// Myo's *own* brain on this port is harmless: same persisted token, so
+/// re-attaching authenticates.
+pub const ODYSSEUS_PORT: u16 = 17000;
 /// Myo's **private** MyOwnLLM (model engine) port — deliberately *not*
 /// MyOwnLLM's shared default `:1473`. Myo owns its own engine instance here, so
 /// it never contends with (or attaches to) a user's separately-run MyOwnLLM /
@@ -25,7 +33,7 @@ pub const ODYSSEUS_PORT: u16 = 7000;
 /// Ctrl-C'd run is harmless: it's the same pinned, route-capable build.
 pub const MYOWNLLM_PORT: u16 = 11473;
 
-/// `http://127.0.0.1:7000` — the brain's base URL.
+/// `http://127.0.0.1:17000` — Myo's owned brain URL.
 pub fn odysseus_base_url() -> String {
     format!("http://127.0.0.1:{ODYSSEUS_PORT}")
 }
@@ -217,7 +225,7 @@ mod tests {
         let spec = odysseus_spec("/venv/bin/uvicorn", PathBuf::from("/srv/ody"), "deadbeef");
         assert_eq!(spec.program, "/venv/bin/uvicorn");
         assert!(spec.args.contains(&"app:app".to_string()));
-        assert!(spec.args.contains(&"7000".to_string()));
+        assert!(spec.args.contains(&"17000".to_string()));
         assert_eq!(spec.cwd, Some(PathBuf::from("/srv/ody")));
         assert!(spec
             .env
@@ -227,7 +235,7 @@ mod tests {
             .env
             .iter()
             .any(|(k, v)| k == "AUTH_ENABLED" && v == "true"));
-        assert_eq!(spec.health_url, "http://127.0.0.1:7000/api/health");
+        assert_eq!(spec.health_url, "http://127.0.0.1:17000/api/health");
     }
 
     #[test]
