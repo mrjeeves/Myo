@@ -1,0 +1,54 @@
+name: 🐛 Bug report
+description: Something in Myo isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug! Fill out what you can — even a partial report helps.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `myo ...`
+        2. ...
+        3. See ...
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux (x86_64)
+        - Linux (aarch64)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows (x86_64)
+        - Building from source
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Myo version
+      description: Output of `myo --version`
+      placeholder: myo 0.1.0
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Any relevant terminal output. Automatically formatted as code.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for a duplicate.
+          required: true
