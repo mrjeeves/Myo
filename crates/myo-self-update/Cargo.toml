@@ -17,4 +17,4 @@ reqwest.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-which = "6"
+which = "8"
