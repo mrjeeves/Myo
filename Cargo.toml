@@ -18,6 +18,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 hex = "0.4"
+# Decoding the WebView's base64-encoded mic captures back to audio bytes
+# before handing them to the transcription engine.
+base64 = "0.22"
 dirs = "6"
 # default-features off + rustls keeps the binary free of a system OpenSSL
 # dependency, which matters for the 5-target release matrix.

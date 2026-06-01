@@ -31,8 +31,9 @@ Tauri commands the frontend invokes ([`src-tauri/src/core_api.rs`](../src-tauri/
 |---|---|
 | `myo_engines_status` / `myo_engines_ensure_ready` | health of the brain + model engine; launch and auto-wire them |
 | `myo_converse_say{text}` → `turnId` | the **text path**: brain answer (streamed) → voice |
+| `myo_converse_feed_audio{audio,mime}` → `turnId?` | the **voice path**: base64 WAV → MyOwnLLM transcription → turn (`null` = silence/empty) |
 | `myo_converse_cancel{turn}` | barge-in / stop an in-flight turn |
-| `myo_converse_feed_wav{path}` | reserved for `myo-asr` (returns a clear "not bundled yet") |
+| `myo_converse_feed_wav{path}` → `turnId?` | WAV-**file** bypass (CI / "transcribe this file") → turn |
 | `myo_capabilities_get` / `myo_capabilities_set{caps}` | the four Web/Files/Code/Reach-out toggles |
 | `myo_converse_incognito{on}` | pause memory (privacy) |
 | `myo_memory_list{query?}` / `myo_memory_forget{id}` | review / forget what Myo remembers |
@@ -68,32 +69,43 @@ default model endpoint, and applies the persisted capability allowlist. Then:
 type in the composer → watch the answer stream, the tool feed run, documents
 materialize, and the reply speak back.
 
-**CI / no-audio:** the text path (`myo_converse_say`) needs no microphone, which
-is exactly how the round-trip is exercised without hardware.
+**CI / no-audio:** the text path (`myo_converse_say`) needs no microphone, and
+`myo_converse_feed_wav{path}` runs a fixture file through the same transcription
+engine — the two no-mic hooks that exercise the round-trip without hardware.
+
+**Mic permission (per platform).** The always-on capture needs the WebView to
+allow `getUserMedia`. Windows (WebView2) is granted declaratively via
+`additionalBrowserArgs` (`--use-fake-ui-for-media-stream`) in
+[`tauri.conf.json`](../src-tauri/tauri.conf.json); macOS reads
+`NSMicrophoneUsageDescription` from [`src-tauri/Info.plist`](../src-tauri/Info.plist).
+Linux WebKitGTK still needs an `enable-media-stream` + permission-grant hook in
+the setup (small follow-up). If capture can't start, the listener logs the exact
+error (`[myo-listen]` / `[myo]` in the devtools console) and the shell falls back
+to the text composer.
 
 ## Seams left open (deliberately)
 
 These are real, scoped follow-ups — the shell is built *around* each seam so the
 engine drops in without reshaping the shell:
 
-- **👂 On-device ASR — the remaining "ear".** Open-mic capture → VAD →
-  transcription. The brain→voice half already runs; `myo_converse_feed_wav` and
-  the mic button are the placeholders, and `myo://transcript` is already in the
-  vocabulary. MyOwnLLM's STT is now **always-on, recorded, and diarized**
-  (persistent speaker IDs) — but it's still **in-process only**: it has no
-  HTTP/WS/CLI surface, every entry point needs a live `WebviewWindow`, and its
-  output goes solely to that window's event bus. So there are two ways in:
-  - **(recommended) a loopback bridge in MyOwnLLM.** Its transcription is built
-    on a `FrameSink` trait (`src-tauri/src/frame_sink.rs`); the internal workers
-    already take `Arc<dyn FrameSink>`. Adding a `FrameSink` impl that forwards
-    `TranscribeFrame`s over a small WS/loopback route (axum's `ws` feature) turns
-    the "ear" into a thin client Myo connects to — mirroring the brain. Small,
-    well-localized change *there*; then `engines/asr_local` here is a WS client
-    that re-emits on `myo://transcript`.
-  - **(heavy) extract the engine** into `crates/myo-asr` — the `transcribe.rs` +
-    `asr/` + `diarize/` pipeline plus onnxruntime (`load-dynamic`) and model
-    management. Tractable via the same `FrameSink` seam, but it drags the whole
-    onnx stack into Myo. See [`myownllm-integration.md`](myownllm-integration.md) §1.
+- **👂 Voice input — wired (open-mic).** Myo is always listening: the WebView
+  captures the mic (`getUserMedia` with echo-cancellation), a lightweight energy
+  VAD segments utterances ([`src/lib/audio-io.ts`](../src/lib/audio-io.ts)), and
+  each finished utterance is base64'd to `myo_converse_feed_audio`, which POSTs it
+  to MyOwnLLM's **`/v1/audio/transcriptions`** route. That route is the loopback
+  bridge this seam called for — added on the MyOwnLLM side as a thin *headless*
+  wrapper over its upload-ASR pipeline (`transcribe::transcribe_file_blocking` →
+  `run_upload` with a collecting `FrameSink`, diarization off, the temp audio
+  deleted immediately). The transcript then drives the same brain→voice turn as
+  text (`myo://transcript` → `assistant` → `audio`). The mic button is the one-tap
+  hard mute; nothing audible leaves the device and no audio is retained.
+  **Refinements still open:** full-duplex **barge-in** (today it's half-duplex —
+  the mic gates while Myo thinks/speaks so she never transcribes herself), **Silero
+  VAD** in place of the energy gate (+ AudioWorklet for the deprecated
+  `ScriptProcessorNode`), and the heavier option of extracting the engine
+  in-process (`crates/myo-asr`, see [`myownllm-integration.md`](myownllm-integration.md)
+  §1) if Myo ever needs ASR decoupled from the `:1473` sidecar (warm sessions,
+  diarization, offline-from-the-sidecar).
 - **✋ Fine-grained approval (tier-b).** Coarse control (the four toggles) ships
   now; per-action approve/tweak/edit needs the upstreamable Odysseus hook plus an
   ApprovalCard surface. Reserved in the event vocabulary.

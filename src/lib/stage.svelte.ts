@@ -20,7 +20,7 @@ import {
   type TurnId,
   type UiEvent,
 } from "./core-api";
-import { Voice } from "./audio-io";
+import { Listener, Voice, blobToBase64 } from "./audio-io";
 
 export type Phase = "idle" | "listening" | "thinking" | "speaking";
 
@@ -97,6 +97,12 @@ class MyoStore {
   // Conversation
   phase = $state<Phase>("idle");
   micReady = $state(false);
+  // Whether the mic is actively capturing right now (drives the composer's mic
+  // button). Distinct from `micReady`, which only means a device exists.
+  listening = $state(false);
+  // Hard-muted: the user tapped the mic off. Myo's default is always-listening,
+  // so this is the one-tap privacy switch, not the norm.
+  muted = $state(false);
   turns = $state<Turn[]>([]);
 
   // Document artifacts (the focal "stage" surface) + recall history
@@ -110,6 +116,7 @@ class MyoStore {
   memories = $state<MemoryItem[]>([]);
 
   private voice = new Voice();
+  private listener?: Listener;
   private activeTurn: TurnId | null = null;
   // The artifact currently being streamed (target for delta/update), tracked
   // separately from `focusedArtifact` (what's on the stage) so recalling an
@@ -126,7 +133,7 @@ class MyoStore {
       if (s === "speaking") {
         this.phase = "speaking";
       } else if (this.activeTurn === null) {
-        this.phase = "idle";
+        this.toIdle();
       } else {
         this.phase = "thinking";
       }
@@ -154,11 +161,125 @@ class MyoStore {
 
     // Kick the engines (best-effort; narrated on myo://engine).
     api.enginesEnsureReady().catch(() => {});
+
+    // Myo is always listening: open the mic now. If the WebView needs a user
+    // gesture first (autoplay / permission), this throws and the mic button in
+    // the composer becomes the enable affordance instead.
+    void this.startListening();
   }
 
   dispose() {
     this.unlisten?.();
     this.voice.stop();
+    this.listener?.stop();
+  }
+
+  // ── Listening (always-on mic) ────────────────────────────────────────────────
+
+  /** Phase once a turn settles: keep listening if the mic is live (and not
+   *  muted), else idle. Also drops the capture gate raised while Myo was busy,
+   *  so her ears reopen the instant she stops thinking/speaking. */
+  private toIdle() {
+    if (this.listener?.running && !this.muted) {
+      this.listener.setGated(false);
+      this.phase = "listening";
+    } else {
+      this.phase = "idle";
+    }
+  }
+
+  private gateMic(on: boolean) {
+    this.listener?.setGated(on);
+  }
+
+  /** Open the mic and start the always-on listen loop (best-effort). */
+  async startListening() {
+    if (this.listener?.running) return;
+    const listener =
+      this.listener ??
+      new Listener({
+        onUtterance: (wav) => void this.onUtterance(wav),
+        onSpeechStart: () => this.onSpeechStart(),
+        onLevel: (rms) => console.debug("[myo] idle mic level", rms.toFixed(4)),
+        onError: (e) => {
+          console.warn("[myo] mic error", e);
+          this.micReady = false;
+          this.listening = false;
+          this.listener = undefined;
+          if (this.activeTurn === null) this.phase = "idle";
+        },
+      });
+    try {
+      await listener.start();
+      this.listener = listener;
+      this.micReady = true;
+      this.listening = true;
+      this.muted = false;
+      if (this.activeTurn === null) this.toIdle();
+    } catch (e) {
+      console.warn("[myo] could not start listening (falling back to typing):", e);
+      this.micReady = false;
+    }
+  }
+
+  /** Hard mute: release the mic entirely (privacy switch). */
+  stopListening() {
+    this.listener?.stop();
+    this.listener = undefined;
+    this.listening = false;
+  }
+
+  /** The composer's mic button: toggle always-on listening on/off. */
+  async toggleMic() {
+    if (this.listener?.running) {
+      if (this.listener.suspended) {
+        // First user gesture: unlock a context that started suspended (autoplay
+        // policy) rather than muting — so the button reliably *enables* the ears.
+        await this.listener.resume();
+        if (this.activeTurn === null) this.toIdle();
+        return;
+      }
+      this.stopListening();
+      this.muted = true;
+      if (this.activeTurn === null) this.phase = "idle";
+    } else {
+      this.muted = false;
+      await this.startListening();
+    }
+  }
+
+  private onSpeechStart() {
+    // Barge-in hook: the mic is gated while Myo thinks/speaks (half-duplex), so
+    // onset only fires when she's idle — reflect that she's actively hearing you.
+    if (this.activeTurn === null && !this.muted) this.phase = "listening";
+  }
+
+  private async onUtterance(wav: Blob) {
+    // Gate first (before any await) so the half-duplex mic can't capture Myo's
+    // own reply mid-turn, then close out any stray live turn.
+    this.gateMic(true);
+    this.voice.stop();
+    if (this.activeTurn !== null) {
+      await api.cancel(this.activeTurn).catch(() => {});
+      this.activeTurn = null;
+    }
+    this.phase = "thinking";
+    try {
+      const b64 = await blobToBase64(wav);
+      const turn = await api.feedAudio(b64, "audio/wav");
+      if (turn == null) {
+        // Nothing intelligible (silence / noise) — reopen the ears.
+        this.activeTurn = null;
+        this.toIdle();
+      } else {
+        this.activeTurn = turn;
+      }
+    } catch (e) {
+      console.error("[myo] transcription failed", e);
+      this.pushErrorTurn(String(e));
+      this.activeTurn = null;
+      this.toIdle();
+    }
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────
@@ -169,13 +290,14 @@ class MyoStore {
     // A new utterance while a turn is live is barge-in: cancel the old one
     // first so its bookkeeping isn't orphaned and two turns don't overlap.
     if (this.activeTurn !== null) await this.cancel();
+    this.gateMic(true);
     this.voice.stop();
     this.phase = "thinking";
     try {
       this.activeTurn = await api.say(t);
     } catch (e) {
-      this.phase = "idle";
       this.pushErrorTurn(String(e));
+      this.toIdle();
     }
   }
 
@@ -185,7 +307,7 @@ class MyoStore {
       await api.cancel(this.activeTurn).catch(() => {});
     }
     this.activeTurn = null;
-    this.phase = "idle";
+    this.toIdle();
   }
 
   /** User flips a capability: reflect it and push to the brain. */
@@ -263,7 +385,7 @@ class MyoStore {
       // If there was nothing to voice, the turn is over now.
       if (!t.assistant.trim() && this.activeTurn === e.turn) {
         this.activeTurn = null;
-        this.phase = "idle";
+        this.toIdle();
       }
     }
   }
@@ -361,7 +483,7 @@ class MyoStore {
       t.done = true;
       if (this.activeTurn === e.turn) {
         this.activeTurn = null;
-        this.phase = "idle";
+        this.toIdle();
       }
     }
   }
@@ -381,7 +503,7 @@ class MyoStore {
     // available), the Voice "speaking" callback never fires — settle to idle
     // now so the UI can't get stuck on "thinking". (When playback DID start,
     // `playBase64`/`speak` already set the phase to "speaking" synchronously.)
-    if (this.phase !== "speaking") this.phase = "idle";
+    if (this.phase !== "speaking") this.toIdle();
   }
 
   private onEngine(e: EngineEvent) {

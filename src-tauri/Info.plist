@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS-only Info.plist additions, merged into the app bundle by Tauri.
+  NSMicrophoneUsageDescription is required for getUserMedia to be allowed on
+  macOS (WKWebView surfaces this string in the system permission prompt). Myo
+  is always listening, so the mic is requested at launch; the copy makes the
+  on-device, nothing-stored posture explicit.
+-->
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Myo listens to your voice so you can talk to her hands-free. Audio is transcribed on your device and never stored.</string>
+  </dict>
+</plist>

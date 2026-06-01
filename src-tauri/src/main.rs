@@ -103,7 +103,12 @@ fn run_gui() {
         "myo",
     ))
     .expect("failed to build the brain client");
-    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, settings));
+    // The ears: a loopback client for MyOwnLLM's transcription route. Built up
+    // front (like the brain) so commands can reference it; its calls just fail
+    // until the model engine is serving on :1473.
+    let asr = myo_core::AsrClient::new(myo_core::supervisor::myownllm_base_url())
+        .expect("failed to build the ASR client");
+    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, settings));
 
     tauri::Builder::default()
         .manage(app_state.clone())
@@ -119,6 +124,7 @@ fn run_gui() {
             core_api::myo_converse_say,
             core_api::myo_converse_cancel,
             core_api::myo_converse_feed_wav,
+            core_api::myo_converse_feed_audio,
             core_api::myo_converse_incognito,
             core_api::myo_capabilities_get,
             core_api::myo_capabilities_set,

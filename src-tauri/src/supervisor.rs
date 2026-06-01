@@ -36,6 +36,20 @@ pub async fn ensure_ready(app: AppHandle, state: Arc<MyoState>) {
     start_odysseus(&app, &state).await;
     start_myownllm(&app, &state).await;
 
+    // Pre-pay the ASR engine's cold start (onnxruntime + model download/load)
+    // in the background so Myo's first spoken words don't wait on it. Myo is
+    // always listening, so she'll want her ears warm. Best-effort: it logs and
+    // gives up if the model engine isn't serving yet.
+    {
+        let st = state.clone();
+        let health_url = format!("{}/healthz", specs::myownllm_base_url());
+        tauri::async_runtime::spawn(async move {
+            if specs::endpoint_reachable(&health_url).await {
+                let _ = st.asr.warm_up().await;
+            }
+        });
+    }
+
     // Auto-config (PLAN step 6): point the brain at MyOwnLLM and push the
     // current capability allowlist. Both need a healthy brain.
     if state.brain.health().await.unwrap_or(false) {
