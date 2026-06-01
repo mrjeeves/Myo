@@ -4,6 +4,10 @@
 honest map of what the **v1 orchestration shell** actually does right now, how
 to run it against the real engines, and where the seams are.
 
+> **Picking up the voice work?** Start at **[`voice-handoff.md`](voice-handoff.md)** —
+> current state, open PRs, and the exact next steps (real-time streaming
+> dictation + full-duplex).
+
 Myo is **the AI, not an app with an AI inside it**: a thin voice-first shell
 that composes three local engines as swappable senses behind one internal API
 and renders the agent's intent as a "dissolved" UI. v1 builds that shell
