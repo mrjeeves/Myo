@@ -103,9 +103,9 @@ fn run_gui() {
         "myo",
     ))
     .expect("failed to build the brain client");
-    // The ears: a loopback client for MyOwnLLM's transcription route. Built up
-    // front (like the brain) so commands can reference it; its calls just fail
-    // until the model engine is serving on :1473.
+    // The ears: an HTTP client for Myo's *own* engine on its private port
+    // (`:11473`, not the shared `:1473`), so transcription never attaches to a
+    // user's separately-run / stale MyOwnLLM.
     let asr = myo_core::AsrClient::new(myo_core::supervisor::myownllm_base_url())
         .expect("failed to build the ASR client");
     let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, settings));

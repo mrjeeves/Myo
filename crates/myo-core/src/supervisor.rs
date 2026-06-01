@@ -6,7 +6,8 @@
 //! args, env, cwd, health URL), the loopback ports, the internal-auth token
 //! minter, and the one-call brain↔MyOwnLLM wiring.
 //!
-//! Ports (PLAN "Architecture"): Odysseus on `:7000`, MyOwnLLM on `:1473`.
+//! Ports: Odysseus on `:7000`; Myo's owned MyOwnLLM on a private `:11473` (not
+//! MyOwnLLM's shared `:1473`, so Myo never collides with a user's own engine).
 
 use std::path::PathBuf;
 
@@ -16,16 +17,21 @@ use crate::brain::BrainClient;
 
 /// Odysseus (the brain) loopback port.
 pub const ODYSSEUS_PORT: u16 = 7000;
-/// MyOwnLLM (the model engine) loopback port.
-pub const MYOWNLLM_PORT: u16 = 1473;
+/// Myo's **private** MyOwnLLM (model engine) port — deliberately *not*
+/// MyOwnLLM's shared default `:1473`. Myo owns its own engine instance here, so
+/// it never contends with (or attaches to) a user's separately-run MyOwnLLM /
+/// desktop app on `:1473` — the bug that 404'd voice input when Myo latched
+/// onto a stale engine. An orphan of *Myo's own* engine left on this port by a
+/// Ctrl-C'd run is harmless: it's the same pinned, route-capable build.
+pub const MYOWNLLM_PORT: u16 = 11473;
 
 /// `http://127.0.0.1:7000` — the brain's base URL.
 pub fn odysseus_base_url() -> String {
     format!("http://127.0.0.1:{ODYSSEUS_PORT}")
 }
 
-/// `http://127.0.0.1:1473` — the model engine's base URL (also what Odysseus is
-/// pointed at as its default OpenAI endpoint).
+/// `http://127.0.0.1:11473` — Myo's owned model-engine URL (also what Odysseus
+/// is pointed at as its default OpenAI endpoint).
 pub fn myownllm_base_url() -> String {
     format!("http://127.0.0.1:{MYOWNLLM_PORT}")
 }
@@ -182,10 +188,10 @@ mod tests {
     }
 
     #[test]
-    fn myownllm_spec_serves_on_1473() {
+    fn myownllm_spec_serves_on_myos_private_port() {
         let spec = myownllm_spec("/usr/local/bin/myownllm");
-        assert_eq!(spec.args, vec!["serve", "--port", "1473"]);
-        assert_eq!(spec.health_url, "http://127.0.0.1:1473/healthz");
+        assert_eq!(spec.args, vec!["serve", "--port", "11473"]);
+        assert_eq!(spec.health_url, "http://127.0.0.1:11473/healthz");
         assert!(spec.cwd.is_none());
     }
 

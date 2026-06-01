@@ -1,17 +1,13 @@
-//! The ears client — a loopback HTTP client for MyOwnLLM's transcription.
+//! The ears — a loopback HTTP client for the engine Myo *owns*.
 //!
-//! Myo is a character who's always listening. Open-mic audio is captured in
-//! the WebView (so the browser's echo-cancellation sees the same context as
-//! TTS playback), and each detected utterance is handed to the backend,
-//! which forwards it here. We POST the raw audio bytes to MyOwnLLM's `serve`
-//! ASR route — `POST /v1/audio/transcriptions` on `:1473` — and get back the
-//! recognized text. MyOwnLLM owns the actual Moonshine/Parakeet inference;
-//! this is the thin seam to it (the model-engine sidecar Myo already spawns,
-//! so there's no second engine to bundle).
+//! Myo spawns its own bundled `myownllm serve` on a **private** port (not the
+//! shared `:1473` that a user's own MyOwnLLM / desktop app uses), so
+//! transcription talks to an engine Myo controls and pinned — never a foreign
+//! or stale instance. Each captured utterance is POSTed to that engine's
+//! `/v1/audio/transcriptions`; the engine owns the Moonshine/Parakeet inference.
 //!
-//! Audio is transcribed transiently: MyOwnLLM deletes the upload the moment
-//! it finishes. That's Myo's privacy default — she's always listening, but
-//! nothing is kept (unlike MyOwnLLM's opt-in "keep audio").
+//! Audio is transcribed transiently: MyOwnLLM deletes the upload the moment it
+//! finishes. That's Myo's privacy default — always listening, nothing kept.
 
 use std::time::Duration;
 
@@ -19,19 +15,16 @@ use anyhow::{anyhow, Result};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 
-/// A loopback client for MyOwnLLM's HTTP transcription route.
+/// A loopback client for Myo's owned `myownllm` transcription endpoint.
 pub struct AsrClient {
     http: Client,
     base_url: String,
 }
 
 impl AsrClient {
-    /// Build a client pointed at MyOwnLLM's base URL (e.g.
-    /// `http://127.0.0.1:1473`). The per-request timeout is deliberately
-    /// generous: the *first* transcription on a cold machine downloads the
-    /// onnxruntime dylib and the ASR model before it can answer (see
-    /// [`AsrClient::warm_up`], which pre-pays that cost at startup so live
-    /// utterances stay snappy).
+    /// `base_url` is Myo's private engine URL (e.g. `http://127.0.0.1:11473`).
+    /// The per-request timeout is generous: the first transcription on a cold
+    /// machine downloads the onnxruntime dylib + ASR model before answering.
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         let http = Client::builder()
@@ -44,10 +37,9 @@ impl AsrClient {
         format!("{}/v1/audio/transcriptions", self.base_url)
     }
 
-    /// POST one utterance's audio and return the recognized text. The text
-    /// may be empty (silence / noise / non-speech) — callers should treat an
-    /// empty transcript as "nothing was said" and not open a turn. `mime` is
-    /// best-effort metadata; MyOwnLLM probes the container by content anyway.
+    /// POST one utterance's audio and return the recognized text. May be empty
+    /// (silence / noise / non-speech) — callers treat that as "nothing said".
+    /// `mime` is best-effort metadata; the engine probes the container anyway.
     pub async fn transcribe(&self, audio: Vec<u8>, mime: &str) -> Result<String> {
         let url = self.endpoint();
         let bytes = audio.len();
@@ -61,8 +53,7 @@ impl AsrClient {
             .map_err(|e| anyhow!("ASR request to {url} failed: {e}"))?;
         let status = resp.status();
         if status == StatusCode::SERVICE_UNAVAILABLE {
-            // Engine still warming (downloading runtime / model). Surface a
-            // clear, retriable error rather than a generic failure.
+            // Engine still warming (downloading runtime / model) — retriable.
             let body = resp.text().await.unwrap_or_default();
             return Err(anyhow!(
                 "transcription engine warming up: {}",
@@ -90,14 +81,12 @@ impl AsrClient {
         Ok(text)
     }
 
-    /// Best-effort warm-up: send a short clip of silence so MyOwnLLM pulls
-    /// the onnxruntime dylib + ASR model and loads it *now*, rather than on
-    /// the user's first real words. Fire-and-forget; the empty transcript is
-    /// discarded and any error is just logged (the live path will retry).
+    /// Best-effort warm-up: send a short silent clip so the engine pulls the
+    /// onnxruntime dylib + ASR model now, before the user's first real words.
+    /// Fire-and-forget; a failure is logged, not fatal.
     pub async fn warm_up(&self) -> Result<()> {
         eprintln!("asr: warming up transcription engine (silent probe)…");
-        let wav = silent_wav_16k(300);
-        match self.transcribe(wav, "audio/wav").await {
+        match self.transcribe(silent_wav_16k(300), "audio/wav").await {
             Ok(_) => {
                 eprintln!("asr: transcription engine warm");
                 Ok(())
@@ -115,7 +104,7 @@ fn first_chars(s: &str, n: usize) -> String {
 }
 
 /// A minimal mono 16-bit PCM WAV of `ms` milliseconds of silence at 16 kHz —
-/// just enough of a valid container to force the engine to initialize.
+/// just enough of a valid container to warm the engine.
 fn silent_wav_16k(ms: u32) -> Vec<u8> {
     const SR: u32 = 16_000;
     let samples = (SR as u64 * ms as u64 / 1000) as u32;
@@ -166,7 +155,7 @@ mod tests {
     async fn transcribe_extracts_text() {
         let base = serve_once(
             "HTTP/1.1 200 OK",
-            "{\"text\":\"hello world\",\"model\":\"moonshine-small-q8\"}",
+            "{\"text\":\"hello world\",\"model\":\"moonshine\"}",
         )
         .await;
         let client = AsrClient::new(base).unwrap();
@@ -191,7 +180,7 @@ mod tests {
     async fn warming_up_503_is_a_clear_error() {
         let base = serve_once(
             "HTTP/1.1 503 Service Unavailable",
-            "{\"error\":{\"message\":\"model moonshine is being pulled\",\"code\":\"warming_up\"}}",
+            "{\"error\":{\"message\":\"model is being pulled\",\"code\":\"warming_up\"}}",
         )
         .await;
         let client = AsrClient::new(base).unwrap();
@@ -207,7 +196,6 @@ mod tests {
         let w = silent_wav_16k(100);
         assert_eq!(&w[0..4], b"RIFF");
         assert_eq!(&w[8..12], b"WAVE");
-        // 16 kHz * 0.1 s * 2 bytes = 3200 bytes of samples + 44 header.
         assert_eq!(w.len(), 44 + 3200);
     }
 }

@@ -36,10 +36,9 @@ pub async fn ensure_ready(app: AppHandle, state: Arc<MyoState>) {
     start_odysseus(&app, &state).await;
     start_myownllm(&app, &state).await;
 
-    // Pre-pay the ASR engine's cold start (onnxruntime + model download/load)
-    // in the background so Myo's first spoken words don't wait on it. Myo is
-    // always listening, so she'll want her ears warm. Best-effort: it logs and
-    // gives up if the model engine isn't serving yet.
+    // Pre-pay the ASR engine's cold start (onnxruntime + ASR model download) in
+    // the background so Myo's first spoken words don't wait on it — once Myo's
+    // own engine is actually serving. Best-effort.
     {
         let st = state.clone();
         let health_url = format!("{}/healthz", specs::myownllm_base_url());
@@ -120,6 +119,11 @@ async fn start_odysseus(app: &AppHandle, state: &Arc<MyoState>) {
     }
 }
 
+/// Bring up `myownllm serve` on :1473 — this is the **brain's** OpenAI chat
+/// endpoint (Odysseus talks to it as a model provider). Transcription does NOT
+/// use this: it runs the bundled engine's `transcribe` subcommand directly (see
+/// [`crate::core_api`] / [`myo_core::AsrClient`]), so a stale engine here can't
+/// 404 voice input. Attaches to an already-serving instance, else spawns ours.
 async fn start_myownllm(app: &AppHandle, state: &Arc<MyoState>) {
     let health_url = format!("{}/healthz", specs::myownllm_base_url());
     emit(app, engine("myownllm", "checking", None));
@@ -134,7 +138,6 @@ async fn start_myownllm(app: &AppHandle, state: &Arc<MyoState>) {
         emit(app, engine("myownllm", "error", Some(&e.to_string())));
         return;
     }
-
     if wait_for(STARTUP_TIMEOUT, || async {
         specs::endpoint_reachable(&health_url).await
     })
@@ -232,20 +235,34 @@ fn resolve_odysseus_dir() -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.join("app.py").exists())
 }
 
-fn resolve_myownllm() -> String {
+/// The MyOwnLLM target triple the sidecar was bundled for, stamped in by
+/// `build.rs`. Lets us find the dev-staged `myownllm-<triple>` next to the exe
+/// as well as the triple-stripped production bundle.
+const MYOWNLLM_SIDECAR_TRIPLE: &str = env!("MYOWNLLM_SIDECAR_TRIPLE");
+
+/// Where to find the `myownllm` engine to spawn, in priority order:
+/// 1. `MYO_MYOWNLLM_BIN` — explicit override (dev / CI).
+/// 2. The **bundled sidecar** next to the Myo executable — `tauri dev` stages
+///    it as `myownllm-<triple>{.exe}`, `tauri build` strips the triple. This is
+///    the pinned engine `build.rs` shipped (see `.myownllm-rev`), so the
+///    common case runs a version known to have the transcription route. A
+///    zero-byte stub (written when no engine could be bundled) is skipped.
+/// 3. `myownllm` on `PATH` — last resort.
+pub fn resolve_myownllm() -> String {
     if let Ok(p) = std::env::var("MYO_MYOWNLLM_BIN") {
         return p;
     }
-    let exe_name = if cfg!(windows) {
-        "myownllm.exe"
-    } else {
-        "myownllm"
-    };
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let bundled = dir.join(exe_name);
-            if bundled.exists() {
-                return bundled.to_string_lossy().into_owned();
+            for name in [
+                format!("myownllm-{MYOWNLLM_SIDECAR_TRIPLE}{exe_suffix}"),
+                format!("myownllm{exe_suffix}"),
+            ] {
+                let cand = dir.join(name);
+                if cand.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                    return cand.to_string_lossy().into_owned();
+                }
             }
         }
     }

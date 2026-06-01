@@ -57,10 +57,23 @@ supervisor attaches to whatever's already healthy):
 # Tell Myo where the engines live (dev): 
 export MYO_ODYSSEUS_DIR=/path/to/odysseus          # contains app.py
 export MYO_UVICORN=/path/to/odysseus-venv/bin/uvicorn   # default: ~/.myo/odysseus-venv
-export MYO_MYOWNLLM_BIN=/path/to/myownllm           # default: PATH / bundled
+export MYO_MYOWNLLM_BIN=/path/to/myownllm           # default: bundled sidecar / PATH
 
 cd Myo && pnpm install && cargo run -p myo          # launches the desktop shell
 ```
+
+**The model engine is a pinned, bundled sidecar.** Just as MyOwnLLM bundles a
+pinned `myownmesh` daemon, Myo bundles a pinned `myownllm`: `.myownllm-rev` names
+the required release tag, [`src-tauri/build.rs`](../src-tauri/build.rs) stages
+that binary into `binaries/myownllm-<triple>`, and Tauri ships it as an
+`externalBin` next to the Myo executable. This is what guarantees the engine is
+**new enough to have the transcription route** — pinning it the way the rest of
+the stack pins its dependencies. Build-time resolution: `MYO_MYOWNLLM_BIN`
+override → **sibling MyOwnLLM checkout** (a built `../MyOwnLLM/src-tauri/target/<profile>/myownllm`)
+→ GitHub release download for the pinned tag → zero-byte stub (runtime then
+falls back to `MYO_MYOWNLLM_BIN`/`PATH`). So in dev: `cargo build` your sibling
+MyOwnLLM once and Myo bundles it; bump `.myownllm-rev` when the engine cuts a
+release Myo needs.
 
 On launch the shell mints an `ODYSSEUS_INTERNAL_TOKEN`, injects it into the
 Odysseus child (so it authenticates as admin over loopback — no account needed),
@@ -68,6 +81,14 @@ polls both engines healthy on `myo://engine`, registers MyOwnLLM as Odysseus's
 default model endpoint, and applies the persisted capability allowlist. Then:
 type in the composer → watch the answer stream, the tool feed run, documents
 materialize, and the reply speak back.
+
+**Myo owns its engine on a private port — no more `:1473` collisions.** Myo runs
+*its* pinned `myownllm serve` on `:11473`, not MyOwnLLM's shared `:1473`, so a
+user's own MyOwnLLM / desktop app — or an engine orphaned by a Ctrl-C'd `just
+dev` that didn't run kill-on-drop — can't be attached to. Both chat and
+transcription use Myo's own engine. (An orphan of Myo's *own* engine left on
+`:11473` is harmless: same pinned, route-capable build, so reattaching just
+works.)
 
 **CI / no-audio:** the text path (`myo_converse_say`) needs no microphone, and
 `myo_converse_feed_wav{path}` runs a fixture file through the same transcription
@@ -92,20 +113,16 @@ engine drops in without reshaping the shell:
   captures the mic (`getUserMedia` with echo-cancellation), a lightweight energy
   VAD segments utterances ([`src/lib/audio-io.ts`](../src/lib/audio-io.ts)), and
   each finished utterance is base64'd to `myo_converse_feed_audio`, which POSTs it
-  to MyOwnLLM's **`/v1/audio/transcriptions`** route. That route is the loopback
-  bridge this seam called for — added on the MyOwnLLM side as a thin *headless*
-  wrapper over its upload-ASR pipeline (`transcribe::transcribe_file_blocking` →
-  `run_upload` with a collecting `FrameSink`, diarization off, the temp audio
-  deleted immediately). The transcript then drives the same brain→voice turn as
-  text (`myo://transcript` → `assistant` → `audio`). The mic button is the one-tap
-  hard mute; nothing audible leaves the device and no audio is retained.
-  **Refinements still open:** full-duplex **barge-in** (today it's half-duplex —
-  the mic gates while Myo thinks/speaks so she never transcribes herself), **Silero
-  VAD** in place of the energy gate (+ AudioWorklet for the deprecated
-  `ScriptProcessorNode`), and the heavier option of extracting the engine
-  in-process (`crates/myo-asr`, see [`myownllm-integration.md`](myownllm-integration.md)
-  §1) if Myo ever needs ASR decoupled from the `:1473` sidecar (warm sessions,
-  diarization, offline-from-the-sidecar).
+  to **Myo's own engine** — `/v1/audio/transcriptions` on the private `:11473`
+  (`AsrClient`). Because Myo owns that engine, no stale/foreign instance can
+  hijack ASR. The transcript drives the same brain→voice turn as text
+  (`myo://transcript` → `assistant` → `audio`); the engine deletes the upload
+  immediately and the mic button is the one-tap hard mute. **Refinements still
+  open:** **warm** transcription (the engine rebuilds the ASR backend per
+  utterance — fine beside a multi-second agent turn, but caching the loaded
+  backend in `serve` would make turns snappier), full-duplex **barge-in** (today
+  half-duplex — the mic gates while Myo thinks/speaks so she never transcribes
+  herself), and **Silero VAD** (+ AudioWorklet) in place of the energy gate.
 - **✋ Fine-grained approval (tier-b).** Coarse control (the four toggles) ships
   now; per-action approve/tweak/edit needs the upstreamable Odysseus hook plus an
   ApprovalCard surface. Reserved in the event vocabulary.

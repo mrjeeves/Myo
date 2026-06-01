@@ -16,7 +16,7 @@
 //! | Module | Role |
 //! |---|---|
 //! | [`event`] | the normalized `myo://` intent stream the UI renders |
-//! | [`asr`] | the ears: POST open-mic audio to MyOwnLLM's `:1473` transcription route |
+//! | [`asr`] | the ears: POST captured audio to Myo's own engine (private `:11473`) |
 //! | [`brain`] | the Odysseus loopback client (multipart in, SSE → [`MyoEvent`] out) |
 //! | [`capabilities`] | the 4 toggles ⇄ Odysseus's `allow_*` + `disabled_tools` |
 //! | [`converse`] | one utterance→answer→voice turn |
