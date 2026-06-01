@@ -14,6 +14,10 @@
 // the terminal. The GUI-subsystem + parent-console-attach polish (so the
 // window launches without a console flash) is a later Windows task.
 
+mod core_api;
+mod events;
+mod state;
+mod supervisor;
 mod update_commands;
 
 use update_commands::{
@@ -75,8 +79,9 @@ async fn dispatch(args: Vec<String>) -> anyhow::Result<()> {
     }
 }
 
-/// GUI mode: open the desktop window, register the update commands, and start
-/// the background watcher on Tauri's async runtime.
+/// GUI mode: open the desktop window, register the Core API + update commands,
+/// bring the engines up, and start the background watcher — all on Tauri's
+/// async runtime.
 fn run_gui() {
     // A bare `myo` on a headless box would otherwise exit silently when the
     // webview can't find a display — point the user at the CLI instead.
@@ -87,7 +92,21 @@ fn run_gui() {
         std::process::exit(1);
     }
 
+    // Build the shared state up front: mint the brain's internal token (injected
+    // into Odysseus's env when the supervisor spawns it), load persisted
+    // settings, and create the loopback brain client.
+    let token = myo_core::supervisor::random_token();
+    let settings = myo_core::ShellSettings::load().unwrap_or_default();
+    let brain = myo_core::BrainClient::new(myo_core::BrainConfig::new(
+        myo_core::supervisor::odysseus_base_url(),
+        token.clone(),
+        "myo",
+    ))
+    .expect("failed to build the brain client");
+    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, settings));
+
     tauri::Builder::default()
+        .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![
             update_status,
             update_check_now,
@@ -95,11 +114,26 @@ fn run_gui() {
             update_set_enabled,
             update_leftovers_list,
             update_leftovers_clear,
+            core_api::myo_engines_status,
+            core_api::myo_engines_ensure_ready,
+            core_api::myo_converse_say,
+            core_api::myo_converse_cancel,
+            core_api::myo_converse_feed_wav,
+            core_api::myo_converse_incognito,
+            core_api::myo_capabilities_get,
+            core_api::myo_capabilities_set,
+            core_api::myo_memory_list,
+            core_api::myo_memory_forget,
+            core_api::myo_settings_get,
+            core_api::myo_tts_speak,
         ])
-        .setup(|_app| {
-            // Keep checking in the background; the swap is applied next launch.
-            // Use Tauri's runtime — there's no `#[tokio::main]` here.
+        .setup(move |app| {
+            // Keep checking for updates in the background; the swap is applied
+            // next launch. Use Tauri's runtime — there's no `#[tokio::main]`.
             tauri::async_runtime::spawn(myo_self_update::watcher::watch_forever());
+            // Bring the brain + model engine up and wire them together.
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(supervisor::ensure_ready(app_handle, app_state.clone()));
             Ok(())
         })
         .run(tauri::generate_context!())
