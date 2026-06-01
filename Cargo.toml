@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["src-tauri", "crates/*"]
 
 # Binary and library are versioned together: the running `myo` binary and the
 # self-update engine share one version so "current version" is unambiguous.

@@ -1,0 +1,20 @@
+[package]
+name = "myo"
+description = "Myo — local voice-first AI companion (CLI + desktop shell)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "myo"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+myo-self-update = { path = "../crates/myo-self-update" }
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+anyhow.workspace = true

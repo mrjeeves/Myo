@@ -19,8 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          # Linux is pinned to 22.04 (glibc 2.35) so the binaries run on
-          # 22.04+ / Debian 12 rather than only on the newest runner's glibc.
+          # Linux pinned to 22.04 (glibc 2.35) so binaries run on 22.04+/Debian 12.
           - { name: linux-x86_64,   os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu }
           - { name: linux-aarch64,  os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
           - { name: macos-aarch64,  os: macos-14,         target: aarch64-apple-darwin }
@@ -33,7 +32,6 @@ jobs:
       # The binary embeds CARGO_PKG_VERSION (the workspace version) at compile
       # time. If the tag and the manifest disagree, every install misreports
       # its version and self-update loops forever saying "update available."
-      # The workspace [workspace.package] version is the single source of truth.
       - name: Verify tag matches workspace version
         shell: bash
         run: |
@@ -47,21 +45,38 @@ jobs:
           fi
           echo "Workspace version matches tag $TAG ($EXPECTED)."
 
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform.target }}
-
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform.os }}
 
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Build frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build          # dist/ is embedded into the binary at compile time
+
       - name: Build
         run: cargo build --release --locked -p myo --target ${{ matrix.platform.target }}
 
-      # Package a portable binary + a basename-scoped .sha256 sidecar. The
-      # sidecar's filename column must be the bare basename (not dist-bin/...)
-      # so self-update's verifier finds it; `cd dist-bin` before hashing
-      # guarantees that.
+      # Package the portable binary + a basename-scoped .sha256 sidecar. The
+      # sidecar's filename column must be the bare basename (cd dist-bin first)
+      # so self-update's verifier finds it.
       - name: Package
         shell: bash
         run: |
@@ -85,8 +100,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          # First job to publish creates the (non-draft) release; the rest
-          # append their assets to it.
           draft: false
           prerelease: false
           files: |

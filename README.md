@@ -17,18 +17,25 @@ three engines Myo composes (Odysseus, MyOwnLLM, MyOwnMesh).
 
 ## Codebase
 
-A Cargo workspace (the seed of the `myo` orchestrator from `docs/PLAN.md`):
+A Cargo workspace + Svelte 5 frontend (the seed of the `myo` orchestrator from
+`docs/PLAN.md`, laid out like MyOwnLLM):
 
-| Crate | What it is |
+| Path | What it is |
 |---|---|
-| [`crates/myo-self-update`](crates/myo-self-update) | Set-it-and-forget-it self-updater — GitHub-releases feed, SHA-256-verified download, atomic binary swap, background watcher. Fully unit-tested. |
-| [`crates/myo`](crates/myo) | The `myo` binary: applies staged updates on launch, plus `myo update …` / `myo watch`. |
+| [`crates/myo-self-update`](crates/myo-self-update) | Set-it-and-forget-it self-updater — GitHub-releases feed, SHA-256-verified download, atomic binary swap, background watcher. Tauri-agnostic, fully unit-tested. |
+| [`src-tauri`](src-tauri) | The `myo` binary — CLI **and** desktop shell (Tauri 2). Applies staged updates on launch; `myo update …` / `myo watch`; hosts the update commands. |
+| [`src`](src) | Svelte 5 frontend. The **Settings → Updates** panel lives in [`src/surfaces/UpdatesSection.svelte`](src/surfaces/UpdatesSection.svelte). |
 
 ```sh
-cargo test --workspace      # unit tests
-cargo run -p myo -- --help  # CLI
+pnpm install && pnpm build   # frontend → dist/ (embedded into the binary)
+cargo run -p myo             # desktop window
+cargo run -p myo -- update   # or drive the updater headless
+cargo test --workspace       # unit tests
 ```
 
-**Auto-update** keeps Myo current with zero interaction — the update half of
-the hands-free experience. Design, config, and the (shell-pending) GUI wiring:
+Linux needs the webkit/gtk/soup dev packages (see `docs/auto-update.md`); CI
+installs them and builds the whole engine → Tauri command → Svelte path.
+
+**Auto-update** keeps Myo current with zero interaction — the update half of the
+hands-free experience. Full design, config, and GUI wiring:
 [`docs/auto-update.md`](docs/auto-update.md).

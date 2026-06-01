@@ -10,11 +10,11 @@ This is a faithful port of MyOwnLLM's `self_update.rs` (a *custom* GitHub
 releases updater — **not** the Tauri updater plugin), re-themed for Myo and
 extracted into a reusable, Tauri-agnostic crate.
 
-> **Status.** The engine, the `myo` CLI, the background watcher, and the
-> release/CI pipeline are implemented and unit-tested (`crates/myo-self-update`,
-> `crates/myo`). The **GUI Updates panel** is specified at the bottom of this
-> doc and lands with the Tauri shell (PLAN step 1/7) — it needs a window to live
-> in, so it isn't built yet, but every contract it depends on already exists.
+> **Status.** Fully implemented. The engine, CLI, background watcher, and
+> release/CI pipeline live in `crates/myo-self-update`; the `myo` binary and the
+> desktop **Settings → Updates** panel live in `src-tauri/` +
+> `src/surfaces/UpdatesSection.svelte`. Unit-tested, and the whole path
+> (engine → Tauri command → Svelte) compiles and type-checks in CI.
 
 ---
 
@@ -125,145 +125,50 @@ and loop "update available" forever).
 
 ---
 
-## GUI wiring (lands with the Tauri shell)
+## Desktop GUI
 
-The engine is already shaped for a Settings → Updates panel: `status()`,
-`check_now()`, `set_enabled()`, `apply_pending_strict()`, and the leftover
-helpers all return serde-friendly types. When `src-tauri` exists (PLAN step 1),
-add these six commands — each a thin delegate — and register them in the Tauri
-builder:
+The desktop window (Tauri 2 + Svelte 5, in `src-tauri/` + `src/`) hosts a
+**Settings → Updates** panel — the manual face of the otherwise-automatic
+updater. It's wired end to end:
 
-```rust
-// src-tauri/src/update_commands.rs
-use myo_self_update as su;
+- **Rust commands** — `src-tauri/src/update_commands.rs` exposes six thin
+  delegates to the engine: `update_status`, `update_check_now`,
+  `update_apply_now` (applies strictly, then `app.restart()`),
+  `update_set_enabled`, `update_leftovers_list`, `update_leftovers_clear`.
+  They're registered in `src-tauri/src/main.rs` via `generate_handler!`.
+- **Startup + watcher** — `main()` calls `apply_pending_if_any()` before
+  anything else, and the Tauri `setup` hook starts the background watcher on
+  Tauri's own runtime:
 
-#[tauri::command]
-fn update_status() -> Result<su::UpdateStatus, String> {
-    su::status().map_err(|e| e.to_string())
-}
+  ```rust
+  myo_self_update::apply_pending_if_any();               // before the window opens
+  // …in .setup():
+  tauri::async_runtime::spawn(myo_self_update::watcher::watch_forever());
+  ```
 
-#[tauri::command]
-async fn update_check_now() -> Result<su::CheckOutcome, String> {
-    su::check_now().await.map_err(|e| e.to_string())
-}
+  (The lib also offers `watcher::spawn_background()` for plain Tokio contexts;
+  the GUI uses `async_runtime::spawn` because Tauri owns the runtime.)
+- **Svelte panel** — `src/surfaces/UpdatesSection.svelte` shows the current
+  version/channel/install-kind, a "Check for updates" button, an automatic-updates
+  toggle, the staged-update banner with "Restart & apply now", and the last-check /
+  policy / interval / release-feed details. It binds to exactly the six commands
+  above via `@tauri-apps/api`'s `invoke`.
 
-#[tauri::command]
-fn update_apply_now(app: tauri::AppHandle) -> Result<(), String> {
-    // Apply strictly so a swap failure surfaces BEFORE we relaunch — otherwise
-    // the user sees the old version after "restart" and assumes it worked.
-    su::apply_pending_strict().map_err(|e| e.to_string())?;
-    app.restart();
-}
+### Single binary: CLI + window
 
-#[tauri::command]
-fn update_set_enabled(enabled: bool) -> Result<su::UpdateStatus, String> {
-    su::set_enabled(enabled).map_err(|e| e.to_string())?;
-    su::status().map_err(|e| e.to_string())
-}
+Like MyOwnLLM, one `myo` binary is both. With arguments it's a CLI
+(`myo update …`, `myo watch`, `myo --version`); with none it opens the window.
+Either path applies a staged update first.
 
-#[tauri::command]
-fn update_leftovers_list() -> Vec<su::UpdateLeftover> { su::list_update_leftovers() }
+### Building / running
 
-#[tauri::command]
-fn update_leftovers_clear() -> u64 { su::clear_update_leftovers() }
+```sh
+pnpm install
+pnpm build                 # produces dist/, embedded into the binary at compile time
+cargo run -p myo           # opens the desktop window (needs a display)
+cargo run -p myo -- update # or drive the updater headless
 ```
 
-…and, at the top of `main`/`setup`, the two load-bearing calls:
-
-```rust
-su::apply_pending_if_any();          // before anything else
-su::watcher::spawn_background();      // once a Tokio runtime exists
-```
-
-A ready Svelte 5 panel (ported from MyOwnLLM's `UpdatesSection.svelte`,
-re-themed for Myo — `myo`, `~/.myo`, `MYO_RELEASE_URL_*`) drops into
-`src/surfaces/` and binds to exactly those commands:
-
-```svelte
-<script lang="ts">
-  import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-
-  interface PendingUpdate { version: string; staged_at: string; }
-  interface UpdateStatus {
-    current_version: string;
-    install_kind: "raw" | "package_manager";
-    enabled: boolean;
-    channel: string;
-    auto_apply: string;
-    check_interval_hours: number;
-    last_check_unix: number | null;
-    pending: PendingUpdate | null;
-    release_url: string;
-    release_url_overridden: boolean;
-  }
-  type CheckOutcome =
-    | { kind: "disabled" }
-    | { kind: "package_manager" }
-    | { kind: "up_to_date"; current: string; latest: string }
-    | { kind: "staged"; version: string }
-    | { kind: "policy_blocked"; current: string; latest: string; policy: string };
-
-  let status = $state<UpdateStatus | null>(null);
-  let checking = $state(false);
-  let outcome = $state<CheckOutcome | null>(null);
-  let error = $state("");
-
-  onMount(refresh);
-  async function refresh() {
-    try { status = await invoke<UpdateStatus>("update_status"); }
-    catch (e) { error = String(e); }
-  }
-  async function checkNow() {
-    checking = true; outcome = null; error = "";
-    try {
-      outcome = await invoke<CheckOutcome>("update_check_now");
-      status = await invoke<UpdateStatus>("update_status");
-    } catch (e) { error = String(e); } finally { checking = false; }
-  }
-  async function applyNow() {
-    try { await invoke("update_apply_now"); } catch (e) { error = String(e); }
-  }
-  async function setEnabled(enabled: boolean) {
-    try { status = await invoke<UpdateStatus>("update_set_enabled", { enabled }); outcome = null; }
-    catch (e) { error = String(e); }
-  }
-</script>
-
-{#if status}
-  <div class="updates">
-    <header>
-      <div>
-        <strong>myo {status.current_version}</strong>
-        <small>{status.install_kind === "package_manager" ? "package manager" : "raw binary"} · {status.channel} channel</small>
-      </div>
-      <button onclick={checkNow} disabled={checking || !status.enabled}>
-        {checking ? "Checking…" : "Check for updates"}
-      </button>
-    </header>
-
-    <label>
-      <input type="checkbox" checked={status.enabled}
-             onchange={(e) => setEnabled((e.currentTarget as HTMLInputElement).checked)} />
-      Automatic updates ({status.enabled ? `every ${status.check_interval_hours}h` : "paused"})
-    </label>
-
-    {#if status.pending}
-      <div class="pending">
-        Update staged: <strong>{status.pending.version}</strong> — restart to apply.
-        <button onclick={applyNow}>Restart &amp; apply now</button>
-      </div>
-    {/if}
-
-    {#if outcome?.kind === "staged"}<p>{outcome.version} staged. Restart to apply.</p>
-    {:else if outcome?.kind === "up_to_date"}<p>Up to date ({outcome.latest}).</p>
-    {:else if outcome?.kind === "policy_blocked"}<p>{outcome.latest} available but auto_apply="{outcome.policy}" blocks it.</p>{/if}
-
-    {#if error}<p class="error">{error}</p>{/if}
-  </div>
-{/if}
-```
-
-That panel is the only piece awaiting the shell. Everything behind it — checks,
-downloads, verification, staging, the atomic swap, the policy/channel logic,
-the background cadence — is implemented and tested today.
+Linux needs the webkit/gtk/soup dev packages (`libwebkit2gtk-4.1-dev`,
+`libgtk-3-dev`, `libsoup-3.0-dev`, `libjavascriptcoregtk-4.1-dev`); CI installs
+them and builds the whole path on every push.
