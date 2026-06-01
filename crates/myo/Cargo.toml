@@ -1,0 +1,16 @@
+[package]
+name = "myo"
+description = "Myo — local voice-first AI companion (CLI entrypoint + self-update)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "myo"
+path = "src/main.rs"
+
+[dependencies]
+myo-self-update = { path = "../myo-self-update" }
+anyhow.workspace = true
+tokio.workspace = true

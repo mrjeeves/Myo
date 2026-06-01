@@ -1,0 +1,20 @@
+[package]
+name = "myo-self-update"
+description = "Set-it-and-forget-it self-updater for the Myo binary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+dirs.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+which = "6"

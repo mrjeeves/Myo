@@ -1,0 +1,6 @@
+# Rust build output (Cargo.lock IS committed — Myo ships binaries)
+/target
+
+# OS / editor cruft
+.DS_Store
+*.swp
