@@ -1,0 +1,7 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "default",
+  "description": "Default capabilities for Myo. The update commands are app-defined (no permission needed); the webview only needs core defaults.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

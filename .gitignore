@@ -1,6 +1,13 @@
 # Rust build output (Cargo.lock IS committed — Myo ships binaries)
 /target
 
+# Frontend
+/node_modules
+/dist
+
+# Tauri build-time generated
+/src-tauri/gen
+
 # OS / editor cruft
 .DS_Store
 *.swp
