@@ -16,12 +16,14 @@
 //! | Module | Role |
 //! |---|---|
 //! | [`event`] | the normalized `myo://` intent stream the UI renders |
+//! | [`asr`] | the ears: POST open-mic audio to MyOwnLLM's `:1473` transcription route |
 //! | [`brain`] | the Odysseus loopback client (multipart in, SSE → [`MyoEvent`] out) |
 //! | [`capabilities`] | the 4 toggles ⇄ Odysseus's `allow_*` + `disabled_tools` |
 //! | [`converse`] | one utterance→answer→voice turn |
 //! | [`supervisor`] | engine launch specs + health + brain↔model wiring |
 //! | [`config`] | the persisted `shell` section of `~/.myo/config.json` |
 
+pub mod asr;
 pub mod brain;
 pub mod capabilities;
 pub mod config;
@@ -30,6 +32,7 @@ pub mod event;
 pub mod paths;
 pub mod supervisor;
 
+pub use asr::AsrClient;
 pub use brain::{BrainClient, BrainConfig, TtsAudio};
 pub use capabilities::Capabilities;
 pub use config::ShellSettings;

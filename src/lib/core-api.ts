@@ -37,7 +37,11 @@ export const api = {
   /** Text bypass: returns the allocated turn id. */
   say: (text: string) => invoke<TurnId>("myo_converse_say", { text }),
   cancel: (turn: TurnId) => invoke<boolean>("myo_converse_cancel", { turn }),
-  feedWav: (path: string) => invoke<TurnId>("myo_converse_feed_wav", { path }),
+  /** Voice path: base64 WAV in → transcribe → turn. `null` = empty transcript. */
+  feedAudio: (audio: string, mime: string) =>
+    invoke<TurnId | null>("myo_converse_feed_audio", { audio, mime }),
+  /** WAV-file bypass (CI hook). `null` = empty transcript. */
+  feedWav: (path: string) => invoke<TurnId | null>("myo_converse_feed_wav", { path }),
   setIncognito: (on: boolean) => invoke<boolean>("myo_converse_incognito", { on }),
 
   capabilitiesGet: () => invoke<Capabilities>("myo_capabilities_get"),

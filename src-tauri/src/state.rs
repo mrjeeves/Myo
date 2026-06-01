@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use myo_core::{BrainClient, ShellSettings, TurnAllocator, TurnId};
+use myo_core::{AsrClient, BrainClient, ShellSettings, TurnAllocator, TurnId};
 
 /// A spawned engine sidecar that is killed when this handle drops — so closing
 /// Myo tears the brain/model engine down with it (ported from MyOwnLLM's
@@ -46,6 +46,10 @@ pub struct MyoState {
     /// The loopback client for the brain (created at startup with the minted
     /// internal token; its calls simply fail until the brain is healthy).
     pub brain: BrainClient,
+    /// The ears: posts open-mic utterances to MyOwnLLM's transcription route.
+    /// Like the brain client, it's built up front and simply fails until the
+    /// model engine is serving.
+    pub asr: AsrClient,
     /// The current conversation's session id (one per run, created lazily).
     pub session: Mutex<Option<String>>,
     /// Allocates a fresh turn id per utterance.
@@ -69,10 +73,16 @@ pub struct TurnTask {
 }
 
 impl MyoState {
-    pub fn new(token: String, brain: BrainClient, settings: ShellSettings) -> Self {
+    pub fn new(
+        token: String,
+        brain: BrainClient,
+        asr: AsrClient,
+        settings: ShellSettings,
+    ) -> Self {
         Self {
             token,
             brain,
+            asr,
             session: Mutex::new(None),
             turns: TurnAllocator::new(),
             settings: Mutex::new(settings),

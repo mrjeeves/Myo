@@ -45,16 +45,16 @@ pub async fn myo_engines_ensure_ready(app: AppHandle, state: Shared<'_>) -> Resu
 
 // ─── Converse ───────────────────────────────────────────────────────────────
 
-/// Speak (well, type) to Myo: the text bypass path. Allocates a turn, echoes the
-/// user's words as a final transcript, and spawns the brain→TTS round-trip,
-/// returning the turn id immediately so the UI can follow the stream.
-#[tauri::command]
-pub async fn myo_converse_say(
-    text: String,
+/// Run one converse turn for already-known text: echo it as the final
+/// transcript, then spawn the brain→TTS round-trip and return the turn id
+/// immediately so the UI can follow the `myo://` stream. Shared by the text
+/// path ([`myo_converse_say`]) and the voice paths ([`myo_converse_feed_audio`]
+/// / [`myo_converse_feed_wav`], which prepend ASR).
+async fn spawn_text_turn(
     app: AppHandle,
-    state: Shared<'_>,
+    state: Arc<MyoState>,
+    text: String,
 ) -> Result<TurnId, String> {
-    let state = state.inner().clone();
     let session = state.ensure_session().await.map_err(|e| e.to_string())?;
     let (caps, incognito) = state.turn_context();
     let turn = state.turns.allocate();
@@ -95,6 +95,18 @@ pub async fn myo_converse_say(
     Ok(turn)
 }
 
+/// Speak (well, type) to Myo: the text bypass path. Allocates a turn, echoes the
+/// user's words as a final transcript, and spawns the brain→TTS round-trip,
+/// returning the turn id immediately so the UI can follow the stream.
+#[tauri::command]
+pub async fn myo_converse_say(
+    text: String,
+    app: AppHandle,
+    state: Shared<'_>,
+) -> Result<TurnId, String> {
+    spawn_text_turn(app, state.inner().clone(), text).await
+}
+
 /// Cancel an in-flight turn (barge-in or an explicit stop). Returns whether a
 /// turn was actually running.
 #[tauri::command]
@@ -107,16 +119,62 @@ pub fn myo_converse_cancel(turn: TurnId, app: AppHandle, state: Shared<'_>) -> b
     cancelled
 }
 
-/// The WAV bypass path — reserved for the on-device ASR engine (`myo-asr`),
-/// which isn't bundled in this build. Until it lands, transcription has no local
-/// engine; use [`myo_converse_say`] for the working text path.
+/// The voice path: transcribe one captured utterance, then run it as a turn.
+///
+/// `audio` is base64-encoded raw audio bytes — a WAV from the WebView's
+/// always-on open-mic capture. We hand it to MyOwnLLM's transcription route,
+/// then (for a non-empty transcript) drive the same brain→TTS turn as text.
+/// Returns the new turn id, or `None` when the utterance transcribed to
+/// nothing (silence / background noise) so the always-listening loop never
+/// opens an empty turn.
 #[tauri::command]
-pub fn myo_converse_feed_wav(path: String) -> Result<TurnId, String> {
-    Err(format!(
-        "on-device ASR (myo-asr) isn't bundled in this build yet — \
-         the WAV path will transcribe {path} once the engine is extracted. \
-         Use myo_converse_say for the text path."
-    ))
+pub async fn myo_converse_feed_audio(
+    audio: String,
+    mime: String,
+    app: AppHandle,
+    state: Shared<'_>,
+) -> Result<Option<TurnId>, String> {
+    use base64::Engine;
+    let state = state.inner().clone();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio.as_bytes())
+        .map_err(|e| format!("could not decode audio (expected base64): {e}"))?;
+    eprintln!("converse: feed_audio {} bytes ({mime})", bytes.len());
+    let text = state
+        .asr
+        .transcribe(bytes, &mime)
+        .await
+        .map_err(|e| e.to_string())?;
+    if text.is_empty() {
+        eprintln!("converse: empty transcript — utterance ignored");
+        return Ok(None);
+    }
+    spawn_text_turn(app, state, text).await.map(Some)
+}
+
+/// The WAV-file bypass (CI / "transcribe this file"): read an audio file from
+/// disk, transcribe it via MyOwnLLM, and run the result as a turn — the mic is
+/// never touched. Returns the turn id, or `None` for an empty transcript. This
+/// is the non-audio test hook the PLAN's CI uses to exercise the voice spine
+/// without a microphone.
+#[tauri::command]
+pub async fn myo_converse_feed_wav(
+    path: String,
+    app: AppHandle,
+    state: Shared<'_>,
+) -> Result<Option<TurnId>, String> {
+    let state = state.inner().clone();
+    let bytes = std::fs::read(&path).map_err(|e| format!("reading {path}: {e}"))?;
+    eprintln!("converse: feed_wav {path} ({} bytes)", bytes.len());
+    let text = state
+        .asr
+        .transcribe(bytes, "audio/wav")
+        .await
+        .map_err(|e| e.to_string())?;
+    if text.is_empty() {
+        return Ok(None);
+    }
+    spawn_text_turn(app, state, text).await.map(Some)
 }
 
 /// Pause/resume memory for the conversation (privacy / incognito). Persisted.

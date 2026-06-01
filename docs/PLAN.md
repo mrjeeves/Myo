@@ -74,7 +74,7 @@ You maintain three complementary local-AI projects: **Odysseus** (`/home/user/od
 | Session | `POST /api/session` (one per conversation, reuse id) | `odysseus/routes/session_routes.py:162` |
 | TTS | `POST /api/tts/synthesize` `{text,format:"base64"}`→`{"audio":"<b64>"}`. **503 unless a provider enabled** — default `tts_provider="disabled"`. | `odysseus/routes/tts_routes.py:30-66`; `odysseus/src/settings.py:43` |
 | Point brain→MyOwnLLM | `POST /api/model-endpoints` (form `base_url=http://127.0.0.1:1473/v1`,`model_type=llm`,`supports_tools=true`). **Auto-sets default endpoint+model when none configured.** | `odysseus/routes/model_routes.py:808-888` (auto-default `872-877`) |
-| Model engine | `myownllm serve --port 1473`; `GET /healthz`, `/v1/models`, `/v1/chat/completions`. No transcription over HTTP. | `MyOwnLLM/src-tauri/src/api.rs:69-76,114-200` |
+| Model engine | `myownllm serve --port 1473`; `GET /healthz`, `/v1/models`, `/v1/chat/completions`, **`POST /v1/audio/transcriptions`** (raw audio body → `{text}`; wraps the in-process upload-ASR path so the open-mic loop transcribes via the sidecar Myo already spawns — no in-process `myo-asr` needed). | `MyOwnLLM/src-tauri/src/api.rs` (`transcriptions`) |
 | ASR seam | One-method trait `FrameSink::emit_frame(event,frame)`; only Tauri coupling = `impl FrameSink for WebviewWindow` (10 lines); `CaptureSink` runs it windowless. | `MyOwnLLM/src-tauri/src/frame_sink.rs:23-40` |
 | Sidecar supervision | `DaemonChild` (kill-on-`Drop`), candidate-path resolution, probe-then-spawn; `quiet_command`; `externalBin`. | `MyOwnLLM/src-tauri/src/mesh/daemon.rs:457-920`; `MyOwnLLM/src-tauri/src/process.rs:20` (**not** `mesh/process.rs`); `.../tauri.conf.json` |
 
