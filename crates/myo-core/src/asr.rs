@@ -34,7 +34,9 @@ impl AsrClient {
     /// utterances stay snappy).
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
-        let http = Client::builder().timeout(Duration::from_secs(180)).build()?;
+        let http = Client::builder()
+            .timeout(Duration::from_secs(180))
+            .build()?;
         Ok(Self { http, base_url })
     }
 
@@ -162,9 +164,16 @@ mod tests {
 
     #[tokio::test]
     async fn transcribe_extracts_text() {
-        let base = serve_once("HTTP/1.1 200 OK", "{\"text\":\"hello world\",\"model\":\"moonshine-small-q8\"}").await;
+        let base = serve_once(
+            "HTTP/1.1 200 OK",
+            "{\"text\":\"hello world\",\"model\":\"moonshine-small-q8\"}",
+        )
+        .await;
         let client = AsrClient::new(base).unwrap();
-        let text = client.transcribe(vec![1, 2, 3, 4], "audio/wav").await.unwrap();
+        let text = client
+            .transcribe(vec![1, 2, 3, 4], "audio/wav")
+            .await
+            .unwrap();
         assert_eq!(text, "hello world");
     }
 
@@ -172,7 +181,10 @@ mod tests {
     async fn empty_transcript_is_ok_not_error() {
         let base = serve_once("HTTP/1.1 200 OK", "{\"text\":\"\"}").await;
         let client = AsrClient::new(base).unwrap();
-        assert_eq!(client.transcribe(vec![0; 16], "audio/wav").await.unwrap(), "");
+        assert_eq!(
+            client.transcribe(vec![0; 16], "audio/wav").await.unwrap(),
+            ""
+        );
     }
 
     #[tokio::test]
@@ -183,7 +195,10 @@ mod tests {
         )
         .await;
         let client = AsrClient::new(base).unwrap();
-        let err = client.transcribe(vec![0; 16], "audio/wav").await.unwrap_err();
+        let err = client
+            .transcribe(vec![0; 16], "audio/wav")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("warming up"), "got: {err}");
     }
 

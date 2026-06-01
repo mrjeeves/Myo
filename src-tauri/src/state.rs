@@ -73,12 +73,7 @@ pub struct TurnTask {
 }
 
 impl MyoState {
-    pub fn new(
-        token: String,
-        brain: BrainClient,
-        asr: AsrClient,
-        settings: ShellSettings,
-    ) -> Self {
+    pub fn new(token: String, brain: BrainClient, asr: AsrClient, settings: ShellSettings) -> Self {
         Self {
             token,
             brain,
