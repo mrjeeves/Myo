@@ -14,7 +14,7 @@ jobs:
     name: fmt + clippy + test + frontend
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Tauri's Linux build needs the webkit/gtk/soup stack at compile time.
       - name: Linux deps
@@ -29,8 +29,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm

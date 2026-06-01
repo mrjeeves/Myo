@@ -27,7 +27,7 @@ jobs:
           - { name: windows-x86_64, os: windows-latest,   target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.platform.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The binary embeds CARGO_PKG_VERSION (the workspace version) at compile
       # time. If the tag and the manifest disagree, every install misreports
@@ -60,8 +60,8 @@ jobs:
         with:
           key: ${{ matrix.platform.os }}
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm
@@ -97,7 +97,7 @@ jobs:
           fi
           ls -la dist-bin
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           draft: false

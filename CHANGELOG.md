@@ -6,6 +6,20 @@ All notable changes to Myo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependencies**: bumped `sha2` 0.10→0.11 and `dirs` 5→6 (Rust), `typescript`
+  5→6 and `svelte-check` →4.5 (frontend), and the CI actions (`checkout`,
+  `setup-node`, `pnpm/action-setup`→v6, `action-gh-release`→v3). The `vite` 6→8 /
+  `vite-plugin-svelte` 4→7 jump was held back — vite 8's rolldown bundler drops
+  the `esbuild` minify path our config uses and needs a separate migration.
+
+### Removed
+
+- **Dependabot version-update config** (`.github/dependabot.yml`): retired the
+  weekly auto-PR noise. (Repo-level security alerts are independent of this file
+  and unaffected.)
+
 ### Added
 
 - **Orchestration core** (`crates/myo-core`): the Tauri-free, fully unit-tested
