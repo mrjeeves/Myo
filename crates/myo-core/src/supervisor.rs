@@ -113,6 +113,49 @@ pub fn random_token() -> String {
     out
 }
 
+/// Load Myo's persisted internal brain token, minting + saving one on first run.
+///
+/// Persisting it (rather than minting a fresh token each launch) is what lets
+/// Myo safely *reuse* an Odysseus that's already running — including one
+/// orphaned by a Ctrl-C'd `just dev`. A per-launch token mismatches that brain's
+/// token and 403s every authenticated call; a stable token authenticates. Stored
+/// `0600` at `~/.myo/internal-token` — a loopback-only admin credential.
+pub fn persistent_token() -> String {
+    match crate::paths::myo_dir() {
+        Ok(dir) => persistent_token_in(&dir),
+        Err(_) => random_token(),
+    }
+}
+
+fn persistent_token_in(dir: &std::path::Path) -> String {
+    let path = dir.join("internal-token");
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let t = s.trim();
+        if is_valid_token(t) {
+            return t.to_string();
+        }
+    }
+    let token = random_token();
+    let _ = std::fs::create_dir_all(dir);
+    if std::fs::write(&path, &token).is_ok() {
+        restrict_permissions(&path);
+    }
+    token
+}
+
+fn is_valid_token(t: &str) -> bool {
+    t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &std::path::Path) {}
+
 /// Point the brain at MyOwnLLM if it isn't already (idempotent). Returns whether
 /// a registration was performed. The first endpoint auto-becomes Odysseus's
 /// default, so this is all the model wiring `ensure_ready` needs.
@@ -212,5 +255,18 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b, "two mints must differ");
+    }
+
+    #[test]
+    fn persistent_token_is_stable_across_calls() {
+        let dir = std::env::temp_dir().join(format!("myo-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // First call mints + saves; second call must read back the same token —
+        // that stability is what lets a reused/orphaned brain authenticate.
+        let a = persistent_token_in(&dir);
+        assert!(is_valid_token(&a));
+        let b = persistent_token_in(&dir);
+        assert_eq!(a, b, "token must persist across launches");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

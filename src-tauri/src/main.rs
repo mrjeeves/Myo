@@ -92,10 +92,12 @@ fn run_gui() {
         std::process::exit(1);
     }
 
-    // Build the shared state up front: mint the brain's internal token (injected
-    // into Odysseus's env when the supervisor spawns it), load persisted
+    // Build the shared state up front: load the persisted brain token (injected
+    // into Odysseus's env when the supervisor spawns it — persisted, not minted
+    // per-launch, so Myo can reuse / re-attach to a brain a previous run left
+    // running without a token mismatch 403'ing every call), load persisted
     // settings, and create the loopback brain client.
-    let token = myo_core::supervisor::random_token();
+    let token = myo_core::supervisor::persistent_token();
     let settings = myo_core::ShellSettings::load().unwrap_or_default();
     let brain = myo_core::BrainClient::new(myo_core::BrainConfig::new(
         myo_core::supervisor::odysseus_base_url(),
