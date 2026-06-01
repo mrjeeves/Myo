@@ -1,0 +1,21 @@
+[package]
+name = "myo-core"
+description = "Myo orchestration core — engine clients, capability mapping, and the normalized intent stream. Tauri-agnostic and fully unit-tested."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+dirs.workspace = true
+# multipart: Odysseus's /api/chat_stream is form-data, not JSON.
+# stream: we read the SSE body chunk-by-chunk as it arrives.
+reqwest = { workspace = true, features = ["multipart", "stream"] }
+
+[dev-dependencies]
+# A throwaway loopback server for client integration tests (no external mocks).
+tokio = { workspace = true, features = ["net", "io-util"] }

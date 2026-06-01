@@ -24,11 +24,15 @@ ears, a voice — behind one thin shell, and lets the interface **dissolve into
 the conversation**: you mostly just talk and watch it work. Your voice, your
 memory, your files. Nothing leaves the device.
 
-> 🌱 **Status: early, but real.** The foundations are in — a rock-solid
-> **self-updater** (so Myo stays current with zero fuss) and the **desktop
-> shell**. The voice spine, on-device speech, and the agent brain are next; the
-> whole blueprint lives in **[`docs/PLAN.md`](docs/PLAN.md)**. ⭐ Star it to
-> watch a companion grow up.
+> 🌱 **Status: early, but real — and now it talks back.** The desktop shell
+> drives its brain (the **Odysseus** agent — tools, RAG, continuous memory) and
+> renders the agent's work as a **dissolved UI**: streamed answers, a live tool
+> feed, editable document artifacts, four capability toggles, and a memory you
+> can review and forget — with a **brain→voice round-trip** (server TTS, or
+> WebSpeech fallback) and barge-in. The remaining sense is on-device **open-mic
+> ASR** (`myo-asr`); until it lands you drive turns from the composer. The whole
+> blueprint lives in **[`docs/PLAN.md`](docs/PLAN.md)**; what's wired today is in
+> **[`docs/shell.md`](docs/shell.md)**. ⭐ Star it to watch a companion grow up.
 
 ## ✨ Why Myo
 
@@ -105,22 +109,25 @@ A Cargo workspace + Svelte 5 frontend (the seed of the orchestrator in `docs/PLA
 
 | Path | What it is |
 |---|---|
+| [`crates/myo-core`](crates/myo-core) | The orchestration core — the Odysseus brain client (SSE → normalized intent stream), capability mapping, engine-supervision specs, and the converse round-trip. Tauri-agnostic, fully unit-tested. |
 | [`crates/myo-self-update`](crates/myo-self-update) | The self-updater — release feed, SHA-256 verify, atomic swap, background watcher. Tauri-agnostic, fully unit-tested. |
-| [`src-tauri`](src-tauri) | The `myo` binary — CLI **and** desktop shell (Tauri 2). |
-| [`src`](src) | Svelte 5 frontend; the Settings → Updates panel is [`src/surfaces/UpdatesSection.svelte`](src/surfaces/UpdatesSection.svelte). |
-| [`docs`](docs) | The plan, the decisions, and the engine-integration contracts. |
+| [`src-tauri`](src-tauri) | The `myo` binary — CLI **and** desktop shell (Tauri 2): the Core API commands, the engine supervisor, and the `myo://` event bridge. |
+| [`src`](src) | Svelte 5 frontend — the dissolved-UI surfaces (Presence, Conversation, Activity, DocumentArtifact, Control, Memory) wired to the Core API in [`src/lib`](src/lib). |
+| [`docs`](docs) | The plan, the decisions, what's-wired-today ([`shell.md`](docs/shell.md)), and the engine-integration contracts. |
 
 ## 🗺️ Roadmap
 
-The foundations are down; the companion is being built on top.
+The foundations are down; the companion is real and growing.
 
 - [x] Self-update engine + `myo update` CLI + background watcher
 - [x] Desktop shell (Tauri 2 + Svelte 5) + Settings → Updates panel
 - [x] 5-target release pipeline + one-line installers
-- [ ] 🗣️ Voice spine — open-mic, barge-in, full-duplex
-- [ ] 👂 On-device ASR / diarization (`myo-asr`)
-- [ ] 🧠 Agent brain — tools, RAG, continuous memory
-- [ ] 🪟 Dissolved-UI surface renderer
+- [x] 🧠 **Agent-brain integration** — the Odysseus client (`crates/myo-core`): tools, RAG, continuous memory, and the streamed intent protocol
+- [x] 🪟 **Dissolved-UI surface renderer** — streamed answers, live tool feed, editable document artifacts, agent-driven panels
+- [x] 🎛️ **Capability control + Memory** — the four Web/Files/Code/Reach-out toggles, plus review/forget/incognito
+- [x] 🗣️ **Conversation spine** — brain→voice round-trip (server TTS, WebSpeech fallback) with barge-in/cancel
+- [ ] 👂 On-device **ASR / open-mic input** (`myo-asr`) — the remaining "ears"
+- [ ] ✋ Fine-grained per-action approval (tier-b)
 - [ ] 📱 **iOS & Android** (mobile targets — coming)
 - [ ] 🌐 Multi-device over a local mesh
 
