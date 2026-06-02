@@ -3,7 +3,7 @@
 How Myo (a NEW Tauri 2 + Svelte 5 voice-first shell) reuses MyOwnLLM. Three integration modes:
 
 1. **Extract** MyOwnLLM's ASR + diarization engine into a standalone crate `crates/myo-asr` (Tauri-free).
-2. **Run** MyOwnLLM's model server (`myownllm serve --port 1473`) as a supervised **sidecar** that Myo registers with Odysseus.
+2. **Run** MyOwnLLM's model server (`myownllm serve --port 1473`) as a supervised **sidecar** that Myo's native brain talks to directly (OpenAI HTTP).
 3. **Port** MyOwnLLM's sidecar-supervision + Tauri-bundling + onnxruntime-delivery patterns wholesale.
 
 All paths below are in the MyOwnLLM repo (`/home/user/MyOwnLLM`, branch `claude/practical-shannon-RPFiK`) and were read line-by-line. Crate: `myownllm` v0.2.21, edition 2021, rust-version 1.88.0 (`src-tauri/Cargo.toml:2-9`). Tauri 2 + Svelte 5 (`package.json`). App identifier `run.myownllm.app` (`src-tauri/tauri.conf.json:4`).
@@ -151,7 +151,7 @@ Sibling commands worth mirroring (all in `main.rs`): `transcribe_start` (`:351`)
 
 ---
 
-## 4. The model server (the sidecar Myo registers with Odysseus)
+## 4. The model server (the sidecar Myo's native brain talks to)
 
 `src-tauri/src/api.rs` — an **OpenAI-compatible HTTP server** built on `axum`. Default bind `127.0.0.1:1473`. It is a **chat/embeddings proxy in front of Ollama (`http://127.0.0.1:11434`, `api.rs:33`)** with virtual-model-ID translation — it does **NOT** do transcription over HTTP.
 
@@ -175,7 +175,7 @@ let mut router = Router::new()
 - `GET /v1/models` (`:215`) → the two public virtual IDs `myownllm` (chat) and `myownllm-transcribe` (ASR surface), each with `resolved_to`, plus every raw pulled Ollama tag. (`PUBLIC_VIRTUAL_IDS`, resolver.rs:38-39.)
 - `POST /v1/chat/completions` (`:254`) → translates the virtual model ID, pulls-on-demand if missing (503 + `retry-after: 10` unless `?wait=true`/`x-myownllm-wait`), proxies to Ollama, rewrites the `model` field in the response back to what the client asked for. Streaming forwarded byte-for-byte.
 
-**~~CONFIRMED: no transcription over HTTP.~~ (Superseded.)** This was true when the doc was written, and the `myo-asr` extraction below was the plan to work around it. **It has since been resolved the other way:** MyOwnLLM's `serve` now exposes **`POST /v1/audio/transcriptions`** (raw audio body → `{text}`), a thin headless wrapper over the same in-process upload-ASR pipeline (`transcribe::transcribe_file_blocking` → `run_upload`, diarization off, audio deleted immediately). So Myo's open-mic loop captures in the WebView and POSTs each utterance to the `:1473` sidecar it already spawns — **no in-process `myo-asr` crate required for v1.** The extraction below (§1–§3) remains the path if Myo ever wants ASR fully in-process (offline from the sidecar, warm sessions, diarization); until then it's deferred. The `:1473` endpoint is still also registered with Odysseus as an OpenAI-compatible **chat/LLM** provider.
+**~~CONFIRMED: no transcription over HTTP.~~ (Superseded.)** This was true when the doc was written, and the `myo-asr` extraction below was the plan to work around it. **It has since been resolved the other way:** MyOwnLLM's `serve` now exposes **`POST /v1/audio/transcriptions`** (raw audio body → `{text}`), a thin headless wrapper over the same in-process upload-ASR pipeline (`transcribe::transcribe_file_blocking` → `run_upload`, diarization off, audio deleted immediately). So Myo's open-mic loop captures in the WebView and POSTs each utterance to the `:1473` sidecar it already spawns — **no in-process `myo-asr` crate required for v1.** The extraction below (§1–§3) remains the path if Myo ever wants ASR fully in-process (offline from the sidecar, warm sessions, diarization); until then it's deferred. The `:1473` endpoint is also the OpenAI-compatible **chat/LLM** endpoint Myo's native brain (`llm.rs`) calls directly.
 
 Auth: optional bearer token; warns loudly when bound to a non-loopback host without one (`api.rs:102-106`).
 
@@ -183,7 +183,7 @@ Auth: optional bearer token; warns loudly when bound to a non-loopback host with
 
 ## 5. Sidecar supervision pattern to port
 
-MyOwnLLM supervises the `myownmesh` daemon as a child; Myo ports this to supervise **both** Odysseus (uvicorn) **and** `myownllm serve`. Source: `src-tauri/src/mesh/daemon.rs`.
+MyOwnLLM supervises the `myownmesh` daemon as a child; Myo ports this to supervise its one engine, **`myownllm serve`**. Source: `src-tauri/src/mesh/daemon.rs`.
 
 **Kill-on-`Drop` child wrapper** (`mesh/daemon.rs:457-488`): `DaemonChild` holds `Option<Child>`; `Drop` does `c.kill(); c.wait()`. On Windows it additionally assigns the child to a `KILL_ON_JOB_CLOSE` Job Object (leaked handle) so an abrupt parent exit (Ctrl-C / taskkill / crash, where `Drop` never runs) still terminates the child via the OS:
 
@@ -227,7 +227,7 @@ pub fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comm
 }
 ```
 
-`apply_quiet_flags` sets `CREATE_NO_WINDOW` (0x0800_0000) on Windows, no-op elsewhere (`process.rs:34-40`); `quiet_tokio_command` is the tokio twin (`:28-32`). Every subprocess MyOwnLLM launches (ollama, nvidia-smi, tar, …) goes through these so a GUI-subsystem Windows build doesn't flash a console per spawn. Myo MUST route its uvicorn + `myownllm serve` spawns through the same helper. There's also `throttle_launch_prefix(mode)` (`process.rs:76-114`) returning a `nice`/`ionice`/`taskpolicy` argv prefix (Linux/macOS) and `set_priority_windows` (`:122`) for post-spawn priority on Windows — useful for keeping the desktop responsive under model load.
+`apply_quiet_flags` sets `CREATE_NO_WINDOW` (0x0800_0000) on Windows, no-op elsewhere (`process.rs:34-40`); `quiet_tokio_command` is the tokio twin (`:28-32`). Every subprocess MyOwnLLM launches (ollama, nvidia-smi, tar, …) goes through these so a GUI-subsystem Windows build doesn't flash a console per spawn. Myo MUST route its `myownllm serve` spawn through the same helper. There's also `throttle_launch_prefix(mode)` (`process.rs:76-114`) returning a `nice`/`ionice`/`taskpolicy` argv prefix (Linux/macOS) and `set_priority_windows` (`:122`) for post-spawn priority on Windows — useful for keeping the desktop responsive under model load.
 
 ---
 
@@ -236,7 +236,7 @@ pub fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comm
 `src-tauri/tauri.conf.json` (full file is 50 lines). Key bits:
 
 - App id `run.myownllm.app` (`:4`), `productName: "MyOwnLLM"` (`:3`), schema `https://schema.tauri.app/config/2` (Tauri 2).
-- `bundle.externalBin: ["binaries/myownmesh"]` (`:38-40`) — the sidecar daemon. Tauri appends the target triple per-arch (`binaries/myownmesh-<triple>`) and strips it when placing next to the main exe. Myo will list its own sidecars here (the `myownllm` binary, and optionally a packaged Odysseus).
+- `bundle.externalBin: ["binaries/myownmesh"]` (`:38-40`) — the sidecar daemon. Tauri appends the target triple per-arch (`binaries/myownmesh-<triple>`) and strips it when placing next to the main exe. Myo lists its own sidecar here (the `myownllm` binary).
 - `bundle.targets: "all"` (`:30`), `bundle.macOS.signingIdentity: "-"` (ad-hoc, `:42`).
 - `app.security.csp: null` (`:25`), `plugins.shell.open: true` (`:47`).
 
@@ -290,7 +290,7 @@ Myo MUST ship an `Info.plist` with `NSMicrophoneUsageDescription` or live mic ca
 
 ## 7. onnxruntime delivery (per-arch) — critical for 5 targets
 
-ORT is **dynamically loaded** (not linked): `ort = { features = ["load-dynamic", "api-22"] }` (`Cargo.toml:94`). Both `myo-asr` (moonshine/parakeet/segmenter/embedder) **and** Odysseus's fastembed/Kokoro need the same `libonnxruntime`. Confirmed users of the shared `ort_setup`: `asr/moonshine.rs`, `asr/parakeet.rs`, `diarize/embedder.rs`, `diarize/segmenter.rs`, `transcribe.rs`, `main.rs` (init at startup). Pinned ORT version = **`1.24.2`** (repo-root `.ort-version`, `include_str!` at `ort_install.rs:47`).
+ORT is **dynamically loaded** (not linked): `ort = { features = ["load-dynamic", "api-22"] }` (`Cargo.toml:94`). `myo-asr` (moonshine/parakeet/segmenter/embedder) needs `libonnxruntime`. Confirmed users of the shared `ort_setup`: `asr/moonshine.rs`, `asr/parakeet.rs`, `diarize/embedder.rs`, `diarize/segmenter.rs`, `transcribe.rs`, `main.rs` (init at startup). Pinned ORT version = **`1.24.2`** (repo-root `.ort-version`, `include_str!` at `ort_install.rs:47`).
 
 **Resolution at runtime** — `ort_setup::candidate_paths_with` (`ort_setup.rs:329-381`), in priority order: (1) `ORT_DYLIB_PATH` env override; (2) **next to the executable** (+ macOS `.app` `Contents/Resources/` and `Frameworks/`); (3) app-managed `~/.myownllm/runtime/`; (4) system dirs. Per-platform filenames (`ort_setup.rs:391-395`): macOS `libonnxruntime.dylib` / `libonnxruntime.1.dylib`; Linux `libonnxruntime.so` / `libonnxruntime.so.1`; Windows `onnxruntime.dll`. System dirs include Homebrew (Apple-Silicon + Intel), `/usr/lib/{x86_64,aarch64}-linux-gnu`, and `C:\Program Files\onnxruntime\{bin,lib}` (`:397-417`).
 
@@ -314,7 +314,7 @@ let (name, kind) = if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64"
 
 Covers exactly the 5 targets Myo ships. URL base `https://github.com/microsoft/onnxruntime/releases/download/v{v}/{filename}` (`:129`). `ensure_runtime_dylib` (`:146-`) is **version-aware**: it stamps `.ort-version` next to the dylib in `~/.myownllm/runtime/` and refetches when a cached dll's version != the pinned one (a stale 1.20 dll would load but mismatch the `api-22` C ABI → `GetApi(22)`→NULL→UB/hang). Extracts the dylib out of the `.tgz`/`.zip` and writes the canonical per-platform filename (Linux target name is `libonnxruntime.so.1`, `:82-87`).
 
-**Myo implication:** package one ORT dylib per target next to the exe (or let the first-run fetcher pull it), share that single dylib between `myo-asr` and Odysseus by pointing both at the same path (`ORT_DYLIB_PATH`, or Odysseus's fastembed at the same `~/.../runtime/`). Don't ship two copies.
+**Myo implication:** if/when `myo-asr` is extracted, package one ORT dylib per target next to the exe (or let the first-run fetcher pull it) and point it at that path via `ORT_DYLIB_PATH`. Don't ship two copies.
 
 ---
 
@@ -372,13 +372,13 @@ For Myo: this rides on the MyOwnMesh daemon's RPC/channel surface — see `myown
 ## Gotchas
 
 - **`frame_sink.rs:31-40` is the entire Tauri coupling.** Delete the `impl FrameSink for tauri::WebviewWindow`, change the `transcribe.rs` entry points to take `Arc<dyn FrameSink>` (they immediately wrap `window` in one anyway, e.g. `transcribe.rs:541`), and `myo-asr` is Tauri-free. `models.rs` also imports `tauri::{Emitter, WebviewWindow}` for pull-progress — give it the same seam or a callback.
-- **`quiet_command` is in `src-tauri/src/process.rs`, NOT `mesh/process.rs`.** (The task brief mis-located it.) Route every sidecar spawn (uvicorn + `myownllm serve`) through it or Windows GUI builds flash a console per spawn.
+- **`quiet_command` is in `src-tauri/src/process.rs`, NOT `mesh/process.rs`.** (The task brief mis-located it.) Route every sidecar spawn (`myownllm serve`) through it or Windows GUI builds flash a console per spawn.
 - **No HTTP transcription.** `:1473` is chat/embeddings-over-Ollama only. ASR is in-process. Don't try to POST audio to the sidecar; call `myo-asr` directly.
 - **`.ort-version` is at the REPO ROOT** (`/home/user/MyOwnLLM/.ort-version` = `1.24.2`), reached via `include_str!("../../.ort-version")` from `src-tauri/src/ort_install.rs`. Ship it with the crate.
-- **One ORT dylib, shared.** `myo-asr` and Odysseus's fastembed/Kokoro both dlopen `libonnxruntime` — point both at the same file (don't bundle two). A version mismatch with the `api-22` pin is UB/hang, not a clean error; the version-aware fetcher (`ensure_runtime_dylib`) is what guards against a stale cached dll.
+- **One ORT dylib.** `myo-asr` (if extracted) dlopens `libonnxruntime` — a version mismatch with the `api-22` pin is UB/hang, not a clean error; the version-aware fetcher (`ensure_runtime_dylib`) is what guards against a stale cached dll.
 - **ORT init is uncancellable.** `commit_from_file` can hang inside C++; the `load_session` watchdog leaks the worker thread on timeout rather than wedging the app. Port the watchdog, don't just call `ort` directly.
 - **macOS:** ship `src-tauri/Info.plist` with `NSMicrophoneUsageDescription` (auto-discovered, not config-referenced) or mic capture is TCC-denied.
 - **Linux:** `set_enable_webrtc(true)` + `set_enable_media_stream(true)` must run in `setup()`/`with_webview` BEFORE the page loads, or no `RTCPeerConnection` / `getUserMedia` in the WebView. Linux/aarch64 also needs `WEBKIT_DISABLE_DMABUF_RENDERER=1` (Pi GPU corruption).
 - **`externalBin` triple suffix:** Tauri keeps `-<triple>` on sidecar names in `tauri dev`, strips it in `tauri build` — the resolver in `daemon.rs:646-650`/`:668-677` checks **both** names. Myo's sidecar resolver must do the same.
-- **Sidecar supervision returns `Option<DaemonChild>`:** `None` means "attached to a process we didn't spawn — do NOT kill it on exit." Preserve that distinction for both Odysseus and the model server, or you'll kill a user's externally-running server.
+- **Sidecar supervision returns `Option<DaemonChild>`:** `None` means "attached to a process we didn't spawn — do NOT kill it on exit." Preserve that distinction for the model server, or you'll kill a user's externally-running server.
 - **Capabilities need `shell:allow-execute`** to spawn sidecars, plus `http:default` allowing `http://127.0.0.1:*/*` so the WebView can reach `:1473`.

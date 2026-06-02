@@ -1,13 +1,11 @@
-//! The brain client — a thin loopback HTTP client for the Odysseus agent.
+//! The legacy Odysseus brain client — a thin loopback HTTP client for a running
+//! Odysseus agent.
 //!
-//! Odysseus *is* Myo's brain (PLAN binding decision #2): a local sidecar Myo
-//! talks to over `127.0.0.1`, authenticating as admin with the internal token
-//! so no user account is needed. This client speaks Odysseus's actual wire
-//! shapes — multipart forms in, Server-Sent-Events out — and hands the shell
-//! the normalized [`MyoEvent`] stream instead (see [`sse`]).
-//!
-//! Endpoint contracts are pinned in `docs/odysseus-integration.md` and verified
-//! against the Odysseus source.
+//! **Superseded:** Myo's brain is now native (see `llm.rs` and
+//! `docs/native-agent.md`); this client lingers only for the memory/capability
+//! panels until those slices are ported natively, then it's removed. It speaks
+//! Odysseus's wire shapes — multipart forms in, Server-Sent-Events out — and
+//! hands the shell the normalized [`MyoEvent`] stream instead (see [`sse`]).
 
 pub mod sse;
 

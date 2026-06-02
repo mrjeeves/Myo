@@ -21,4 +21,4 @@ body:
       label: Alternatives you've considered
   - type: markdown
     attributes:
-      value: "Tip: Myo's roadmap and vision live in [docs/PLAN.md](https://github.com/mrjeeves/Myo/blob/main/docs/PLAN.md) — your idea might already be on the map."
+      value: "Tip: Myo's roadmap and vision live in [docs/native-agent.md](https://github.com/mrjeeves/Myo/blob/main/docs/native-agent.md) — your idea might already be on the map."

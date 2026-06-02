@@ -22,13 +22,14 @@ All notable changes to Myo are documented here. The format follows
 
 ### Added
 
-- **Orchestration core** (`crates/myo-core`): the Tauri-free, fully unit-tested
-  heart of the shell — the Odysseus **brain client** (multipart `chat_stream`
-  in, Server-Sent-Events out, normalized into a small `myo://` intent stream),
-  the **capability** mapping (the four Web/Files/Code/Reach-out toggles composed
-  onto Odysseus's `allow_*` flags + persistent `disabled_tools`), engine
-  **supervision specs** + the loopback internal-token minter, and the
-  **converse** round-trip (brain answer → server TTS, with a WebSpeech fallback).
+- **Agent core** (`crates/myo-core`): the Tauri-free, fully unit-tested heart of
+  the agent — the **native brain** (`llm.rs`: streams MyOwnLLM
+  `/v1/chat/completions`, normalized into a small `myo://` intent stream, with a
+  persona + running history), the **capability** mapping (the four
+  Web/Files/Code/Reach-out toggles), engine **supervision specs**, and the
+  **converse** round-trip (ASR → brain → **native TTS** via MyOwnLLM
+  `/v1/audio/speech`, with a WebSpeech fallback). *(A legacy Odysseus brain
+  client lingers until the memory/tool slices are ported natively.)*
 - **Myo Core API** (`src-tauri`): the Core API `#[tauri::command]`s
   (`myo_converse_say`, `myo_capabilities_get/set`, `myo_memory_list/forget`,
   `myo_engines_status/ensure_ready`, `myo_converse_cancel/incognito`, …), the
@@ -40,8 +41,8 @@ All notable changes to Myo are documented here. The format follows
   DocumentArtifact, Control (capability + incognito toggles), and Memory
   (review/search/forget). Honors the agent's `ui_control` panel/toggle
   directives. The Updates panel folds into a Settings slide-over.
-- **Conversation spine**: brain→voice round-trip with barge-in/cancel; the text
-  path (`myo_converse_say`) drives a full turn with no microphone.
+- **Conversation spine**: native brain→voice round-trip with barge-in/cancel;
+  the text path (`myo_converse_say`) drives a full turn with no microphone.
 - **Docs**: [`docs/shell.md`](docs/shell.md) — what's wired today, the Core API,
   and how to run the shell against the real engines.
 - **Self-update engine** (`crates/myo-self-update`): GitHub-releases feed with
@@ -60,7 +61,7 @@ All notable changes to Myo are documented here. The format follows
   per-asset SHA-256 sidecars.
 - **One-line installers** (`scripts/install.sh`, `scripts/install.ps1`).
 - **Branding**: the Myo voice-waveform icon and full app icon set.
-- **Docs**: `docs/auto-update.md`, plus the imported project plan under `docs/`.
+- **Docs**: `docs/auto-update.md`, the native-agent direction (`docs/native-agent.md`), the decisions, and the engine-integration references under `docs/`.
 - Community health files, CI, and issue/PR templates.
 
 [Unreleased]: https://github.com/mrjeeves/Myo/commits/main
