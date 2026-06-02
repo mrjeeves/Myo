@@ -6,13 +6,21 @@
 //! (a held `std::sync::Mutex` guard would make a command future non-`Send`).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use myo_core::{
-    AsrClient, BrainClient, Capabilities, LlmClient, Memory, ShellSettings, TtsClient,
+    AsrClient, BrainClient, Capabilities, DreamConfig, LlmClient, Memory, ShellSettings, TtsClient,
     TurnAllocator, TurnId, WebSearch, MYO_PERSONA,
 };
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// A spawned engine sidecar that is killed when this handle drops — so closing
 /// Myo tears the brain/model engine down with it (ported from MyOwnLLM's
@@ -77,6 +85,9 @@ pub struct MyoState {
     pub children: Mutex<Vec<EngineChild>>,
     /// In-flight turn tasks, so a turn can be cancelled (barge-in / user stop).
     pub tasks: Mutex<HashMap<TurnId, TurnTask>>,
+    /// Unix-millis of the last user-facing activity — the clock Dream mode waits
+    /// on so it only ever runs during genuine downtime.
+    last_activity_ms: AtomicI64,
 }
 
 /// A tracked turn task: its abort handle plus a flag the task sets when it's
@@ -113,6 +124,7 @@ impl MyoState {
             settings: Mutex::new(settings),
             children: Mutex::new(Vec::new()),
             tasks: Mutex::new(HashMap::new()),
+            last_activity_ms: AtomicI64::new(now_ms()),
         }
     }
 
@@ -124,6 +136,33 @@ impl MyoState {
     /// Whether memory is paused for this conversation (incognito).
     pub fn incognito(&self) -> bool {
         self.settings.lock().unwrap().incognito
+    }
+
+    /// The Dream-mode policy (a snapshot of the persisted settings).
+    pub fn dream_config(&self) -> DreamConfig {
+        self.settings.lock().unwrap().dream.clone()
+    }
+
+    /// Mark "something just happened" — resets the downtime clock Dream mode
+    /// waits on. Called at the start and end of every turn.
+    pub fn mark_activity(&self) {
+        self.last_activity_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// Is the system in genuine downtime — no turn running, and at least
+    /// `idle_secs` since the last activity? The gate Dream mode runs behind.
+    pub fn is_idle(&self, idle_secs: u64) -> bool {
+        let running = self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .any(|t| !t.done.load(Ordering::Relaxed));
+        if running {
+            return false;
+        }
+        let idle_for = now_ms() - self.last_activity_ms.load(Ordering::Relaxed);
+        idle_for >= (idle_secs as i64) * 1000
     }
 
     /// The system prompt every turn opens with: the user's custom persona when

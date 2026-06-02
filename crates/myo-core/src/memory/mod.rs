@@ -21,10 +21,12 @@
 //! free of any LLM dependency (embedding happens at the call site, where the
 //! engine client lives), so this module stays small and unit-testable.
 
+pub mod dream;
 mod store;
 mod working;
 
-pub use store::{LongTermMemory, MemoryHit, MemoryRecord};
+pub use dream::{DreamConfig, StepOutcome};
+pub use store::{ConsolidationCluster, LongTermMemory, MemoryHit, MemoryRecord};
 pub use working::WorkingMemory;
 
 use std::path::Path;
@@ -118,6 +120,12 @@ impl Memory {
     /// How many durable memories exist (lets a turn skip recall when empty).
     pub fn long_term_len(&self) -> usize {
         self.long_term.len()
+    }
+
+    /// The durable long-term layer itself — Dream mode plans and compacts over
+    /// it during downtime (see [`dream`]).
+    pub fn long_term(&self) -> &LongTermMemory {
+        &self.long_term
     }
 }
 

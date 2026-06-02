@@ -14,6 +14,7 @@
 // window launches without a console flash) is a later Windows task.
 
 mod core_api;
+mod dream;
 mod engine_update;
 mod events;
 mod state;
@@ -182,6 +183,8 @@ fn run_gui() {
             // Bring the brain + model engine up and wire them together.
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(supervisor::ensure_ready(app_handle, app_state.clone()));
+            // Dream mode: consolidate memory during downtime (24/7 companion).
+            dream::spawn(app.handle().clone(), app_state.clone());
             Ok(())
         })
         .build(tauri::generate_context!())

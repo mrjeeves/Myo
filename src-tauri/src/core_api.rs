@@ -67,6 +67,8 @@ async fn spawn_text_turn(
     text: String,
 ) -> Result<TurnId, String> {
     let turn = state.turns.allocate();
+    // A turn is activity — push back Dream mode's downtime clock.
+    state.mark_activity();
 
     // Show what the user said straight away.
     emit(
@@ -119,6 +121,9 @@ async fn spawn_text_turn(
                 emit(&app_task, MyoEvent::AssistantDone { turn });
             }
         }
+        // The reply is done — restart the downtime clock from now, so Dream mode
+        // waits the full idle window after the conversation actually settles.
+        st.mark_activity();
         done_task.store(true, Ordering::Relaxed);
     });
     state.track_task(turn, TurnTask { handle, done });

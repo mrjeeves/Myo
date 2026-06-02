@@ -41,6 +41,8 @@ pub mod channel {
     pub const AUDIO: &str = "myo://audio";
     /// Engine lifecycle (no turn). Payload `{name, status, detail?}`.
     pub const ENGINE: &str = "myo://engine";
+    /// Dream-mode memory consolidation (no turn). Payload `{phase, note?}`.
+    pub const DREAM: &str = "myo://dream";
 }
 
 /// A routed event: a channel name plus its JSON body, ready for `app.emit`.
@@ -153,6 +155,10 @@ pub enum MyoEvent {
         status: String,
         detail: Option<String>,
     },
+
+    /// Dream mode is consolidating memory during downtime. `phase` is
+    /// `"forget"` or `"consolidate"`; `note` is a short human description.
+    Dream { phase: String, note: Option<String> },
 }
 
 impl MyoEvent {
@@ -281,6 +287,10 @@ impl MyoEvent {
                 channel: ch::ENGINE,
                 payload: json!({ "name": name, "status": status, "detail": detail }),
             },
+            MyoEvent::Dream { phase, note } => Emit {
+                channel: ch::DREAM,
+                payload: json!({ "phase": phase, "note": note }),
+            },
         }
     }
 }
@@ -345,6 +355,7 @@ mod tests {
             channel::PROGRESS,
             channel::AUDIO,
             channel::ENGINE,
+            channel::DREAM,
         ] {
             assert!(c.starts_with("myo://"));
         }

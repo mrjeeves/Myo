@@ -47,6 +47,6 @@ pub use config::{ShellSettings, WebSearchConfig};
 pub use converse::{run_turn, run_turn_native, TurnAllocator};
 pub use event::{channel, Emit, MyoEvent, TurnId};
 pub use llm::{ChatMessage, LlmClient, ToolCall, TurnOutcome, EMBED_MODEL, MYO_PERSONA};
-pub use memory::{Memory, MemoryHit, MemoryRecord};
+pub use memory::{DreamConfig, Memory, MemoryHit, MemoryRecord, StepOutcome};
 pub use tools::WebSearch;
 pub use tts::{TtsAudio, TtsClient};

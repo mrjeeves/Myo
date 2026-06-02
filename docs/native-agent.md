@@ -43,6 +43,7 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
 | Persona / system prompt | `llm::MYO_PERSONA` | ✅ done |
 | Short-term context (session) | working memory (`memory::WorkingMemory`) | ✅ **done (Slice 2)** |
 | Long-term memory + recall (SQLite + embeddings) | `memory` module (`LongTermMemory`: SQLite + `/v1/embeddings`) | ✅ **done (Slice 2)** |
+| Dream mode — downtime consolidation + progressive forgetting | `memory::dream` + `src-tauri/src/dream.rs` (tiered calcification) | ✅ **done (Slice 2)** |
 | Tool loop (web/files/code) + capability gating | `tools` module + the 4 toggles | ✅ **done (Slice 4)** — reach-out + deep research still ⏳ |
 | TTS provider | engine TTS via `/v1/audio/speech` → `AudioReady`, WebSpeech fallback | ✅ **done (Slice 3)** |
 | Scheduling / proactive ("reach out") | later | ⏳ |
@@ -64,6 +65,21 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
    durably through the `remember` tool (and can `recall` on purpose); **incognito
    pauses writes**; the Memory panel (`myo_memory_list`/`myo_memory_forget`) lists
    and forgets. Automatic salience-based capture is a future extension.
+
+   **Dream mode (memory consolidation) — DONE.** Because Myo runs 24/7, the
+   long-term store would grow without bound. `memory::dream` adds sleep-style
+   consolidation that runs **only during downtime**: the shell supervisor
+   (`src-tauri/src/dream.rs`) waits until no turn is running and ≥ `idle_secs`
+   (default 60s) have passed since the last activity (`MyoState::is_idle`), then
+   calls `dream::step` — one small, atomic, resumable unit at a time, paced by
+   `step_interval_secs`. Each memory carries a **tier** (0 = fresh) and salience
+   (`recall_count`/`last_recalled`, bumped on recall). A step either **forgets**
+   (prunes deep, old, never-recalled, unprotected memories — or the weakest when
+   over `space_budget`) or **consolidates** (LLM-summarizes an aging cluster of
+   same-category, similar memories into one denser memory at the next tier,
+   deleting the originals — gist survives, detail fades). Protected categories
+   (e.g. `preference`) are never hard-deleted. All thresholds live in
+   `DreamConfig` (`~/.myo/config.json`); progress emits on `myo://dream`.
 3. **Native TTS — DONE.** `TtsClient` POSTs reply text to MyOwnLLM's
    `/v1/audio/speech` (the hardware-tiered voice — Kokoro/Piper, picked
    engine-side); `run_turn_native` emits `AudioReady{b64,mime}` (the UI plays
