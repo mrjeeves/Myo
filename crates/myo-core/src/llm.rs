@@ -319,8 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_parses_vectors_from_loopback() {
-        let base =
-            serve_once("{\"data\":[{\"index\":0,\"embedding\":[0.5,0.25]}]}").await;
+        let base = serve_once("{\"data\":[{\"index\":0,\"embedding\":[0.5,0.25]}]}").await;
         let client = LlmClient::new(base).unwrap();
         let out = client.embed(&["hello".to_string()]).await.unwrap();
         assert_eq!(out, vec![vec![0.5, 0.25]]);
