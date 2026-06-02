@@ -30,6 +30,22 @@ pub struct ShellSettings {
     /// whitespace-only) means "use the default" — editable from the Brain
     /// surface, with one-tap reset-to-default.
     pub persona: Option<String>,
+    /// How the `web_search` tool reaches the web. Defaults to the keyless
+    /// DuckDuckGo backend, so search works out of the box with no signup; point
+    /// it at a SearXNG instance for a self-hosted, JSON-clean alternative.
+    pub web_search: WebSearchConfig,
+}
+
+/// The web-search backend the native `web_search` tool uses. Keyless by default
+/// (DuckDuckGo's HTML endpoint), with an optional self-hosted SearXNG instance.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case")]
+pub enum WebSearchConfig {
+    /// DuckDuckGo's keyless HTML endpoint — no API key, works anywhere.
+    #[default]
+    Ddg,
+    /// A SearXNG instance's JSON search API at `url` (e.g. `http://127.0.0.1:8080`).
+    Searxng { url: String },
 }
 
 impl ShellSettings {

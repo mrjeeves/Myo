@@ -43,7 +43,7 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
 | Persona / system prompt | `llm::MYO_PERSONA` | ✅ done |
 | Short-term context (session) | `MyoState::history` (+ `chat_context`) | ✅ done |
 | Long-term memory + recall (SQLite + embeddings; ChromaDB degrades) | `memory` module (SQLite + `/v1/embeddings`) | ⏳ Slice 2 |
-| Tool loop (web/files/code/reach-out) + capability gating | `tools` module + the 4 toggles | ⏳ Slice 4 |
+| Tool loop (web/files/code) + capability gating | `tools` module + the 4 toggles | ✅ **done (Slice 4)** — reach-out + deep research still ⏳ |
 | TTS provider | engine TTS via `/v1/audio/speech` → `AudioReady`, WebSpeech fallback | ✅ **done (Slice 3)** |
 | Scheduling / proactive ("reach out") | later | ⏳ |
 
@@ -65,10 +65,19 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
    ONNX forward) plus a self-installing espeak-ng phonemizer, so end-to-end
    audio is live with no system dependency. WebSpeech stays the permanent
    last-resort tier for when the engine errors or is unreachable.
-4. **Tools + capability gating.** A native tool-call loop (the model proposes a
-   tool, Myo runs it, feeds the result back), wired to the existing four toggles
-   (`web`/`files`/`code`/`reach_out`). Emit `activity`/`artifact` events (the UI
-   renders them already). (Reference: Odysseus `mcp_servers/` + `routes/`.)
+4. **Tools + capability gating — DONE (web/files/code).** A native tool-call loop
+   lives in `crates/myo-core/src/tools/` + `converse::run_turn_native`: the model
+   proposes tools, Myo runs them (a round's calls run **concurrently**, each
+   streaming `ActivityProgress` live), feeds results back, and repeats until it
+   answers. Tools — `shell` (Code), `read_file`/`write_file` (Files), `web_search`
+   (Web, keyless DuckDuckGo by default, SearXNG-configurable via
+   `ShellSettings::web_search`) — are gated by the existing toggles: `registry`
+   only offers enabled categories and a `find` backstop refuses anything off.
+   `LlmClient::chat_stream_tools` assembles streamed OpenAI `tool_calls` (handling
+   fragmented and whole-object arguments, and parallel calls). Reach-out and a
+   multi-step deep-research tool are the remaining ⏳ extensions (the registry is
+   built to slot them in). Needs a tool-capable served model (e.g. Qwen3.x);
+   otherwise the loop degrades cleanly to plain chat.
 5. **Hive.** `myownmesh-core`: installs discover each other and share data
    (memories, presence) as a hive. Per-device identity + roster already exist in
    the substrate.

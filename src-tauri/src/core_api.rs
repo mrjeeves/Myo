@@ -81,6 +81,7 @@ async fn spawn_text_turn(
     // Assemble the conversation context natively — persona + running history +
     // this user turn (recorded in history here). No Odysseus session involved.
     let messages = state.chat_context(&text);
+    let caps = state.capabilities();
 
     let app_task = app.clone();
     let st = state.clone();
@@ -88,7 +89,17 @@ async fn spawn_text_turn(
     let done_task = done.clone();
     let handle = tauri::async_runtime::spawn(async move {
         let mut sink = |ev: MyoEvent| emit(&app_task, ev);
-        match myo_core::run_turn_native(&st.llm, &st.tts, &messages, turn, &mut sink).await {
+        match myo_core::run_turn_native(
+            &st.llm,
+            &st.tts,
+            st.web.clone(),
+            caps,
+            messages,
+            turn,
+            &mut sink,
+        )
+        .await
+        {
             Ok(reply) => st.record_reply(reply),
             Err(e) => {
                 // Surface the failure and unblock the turn so the UI doesn't hang.
