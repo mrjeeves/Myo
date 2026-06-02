@@ -59,7 +59,10 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
    Incognito pauses writes. (Reference: Odysseus `services/` memory + RAG.)
 3. **Native TTS.** Replace the WebSpeech fallback with on-device synthesis →
    emit `AudioReady{b64,mime}` (the UI already plays it). Keep WebSpeech as the
-   last-resort fallback.
+   last-resort fallback. **Done the *tiered* way (voices picked by hardware, like
+   ASR) — full plan + handoff in [`TTS-PLAN.md`](TTS-PLAN.md).** The tier ladder
+   lives in MyOwnLLM (it already owns onnxruntime + the tier resolver); Myo stays
+   a thin consumer.
 4. **Tools + capability gating.** A native tool-call loop (the model proposes a
    tool, Myo runs it, feeds the result back), wired to the existing four toggles
    (`web`/`files`/`code`/`reach_out`). Emit `activity`/`artifact` events (the UI
