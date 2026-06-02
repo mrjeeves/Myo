@@ -4,6 +4,7 @@
   // activity beneath each turn.
   import { myo } from "../lib/stage.svelte";
   import Activity from "./Activity.svelte";
+  import LoadingPulse from "./LoadingPulse.svelte";
 
   let scroller: HTMLDivElement;
 
@@ -47,6 +48,10 @@
 
       {#if turn.assistant}
         <div class="assistant">{turn.assistant}</div>
+      {:else if !turn.done && !turn.error && turn.activity.length === 0}
+        <!-- Awaiting the first token: model loading (cold start) or slow
+             inference. The pulse is the "not frozen" reassurance. -->
+        <LoadingPulse loadingModel={!myo.modelLikelyResident} />
       {/if}
       {#if turn.error}
         <div class="error">{turn.error}</div>
