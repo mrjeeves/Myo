@@ -39,6 +39,13 @@ short and easy to follow by ear, going deeper only when you're asked. You're \
 always listening, you remember across conversations, and when you're unsure you \
 say so plainly.";
 
+/// The virtual model ID MyOwnLLM serves embeddings under. Resolving it is the
+/// engine's job: per device it maps to the hardware-appropriate Ollama
+/// embedding model (EmbeddingGemma / Nomic / all-MiniLM), which MyOwnLLM keeps
+/// pulled + warm because it's a tracked mode. Myo's memory system names this
+/// stable id and never has to know the underlying tag.
+pub const EMBED_MODEL: &str = "myownllm-embed";
+
 /// One message in the OpenAI `messages` array.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ChatMessage {
@@ -134,6 +141,39 @@ impl LlmClient {
         self.stream(&model, messages, turn, emit).await
     }
 
+    /// Embed one or more strings into vectors via MyOwnLLM's OpenAI-compatible
+    /// `/v1/embeddings`, against the [`EMBED_MODEL`] virtual ID — the building
+    /// block for Myo's native memory system (store + cosine-search recalled
+    /// context locally, no cloud).
+    ///
+    /// Sends `X-MyOwnLLM-Wait: true` so the very first call on a cold machine
+    /// blocks while the engine pulls the embedding model rather than bouncing
+    /// with a 503; later calls return immediately. Returns one vector per input,
+    /// in request order.
+    pub async fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = json!({ "model": EMBED_MODEL, "input": inputs });
+        let resp = self
+            .http
+            .post(self.url("/v1/embeddings"))
+            .header("X-MyOwnLLM-Wait", "true")
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "embeddings failed (HTTP {status}): {}",
+                txt.chars().take(300).collect::<String>()
+            ));
+        }
+        let v: Value = resp.json().await?;
+        parse_embeddings(&v, inputs.len())
+    }
+
     async fn stream(
         &self,
         model: &str,
@@ -191,6 +231,43 @@ fn openai_delta(data: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Pull the embedding vectors out of an OpenAI `/v1/embeddings` response body
+/// (`data[].embedding`). The OpenAI shape doesn't guarantee `data` arrives in
+/// input order, so we sort by `index` when present before collecting. Errors if
+/// the count doesn't match what we asked for, so a partial/garbled response
+/// fails loudly rather than silently dropping a memory.
+fn parse_embeddings(v: &Value, expected: usize) -> Result<Vec<Vec<f32>>> {
+    let data = v
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("embeddings response had no 'data' array"))?;
+    let mut rows: Vec<(u64, Vec<f32>)> = Vec::with_capacity(data.len());
+    for (fallback_idx, item) in data.iter().enumerate() {
+        let embedding = item
+            .get("embedding")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("embeddings response item had no 'embedding' array"))?
+            .iter()
+            .map(|n| n.as_f64().map(|f| f as f32))
+            .collect::<Option<Vec<f32>>>()
+            .ok_or_else(|| anyhow!("embedding contained a non-numeric value"))?;
+        let idx = item
+            .get("index")
+            .and_then(Value::as_u64)
+            .unwrap_or(fallback_idx as u64);
+        rows.push((idx, embedding));
+    }
+    rows.sort_by_key(|(idx, _)| *idx);
+    let out: Vec<Vec<f32>> = rows.into_iter().map(|(_, e)| e).collect();
+    if out.len() != expected {
+        return Err(anyhow!(
+            "embeddings response returned {} vectors, expected {expected}",
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +289,40 @@ mod tests {
             None
         );
         assert_eq!(openai_delta("not json at all"), None);
+    }
+
+    #[test]
+    fn parse_embeddings_sorts_by_index_and_checks_count() {
+        // Out-of-order `index` fields are reordered back to input order.
+        let v = serde_json::json!({
+            "data": [
+                { "index": 1, "embedding": [0.3, 0.4] },
+                { "index": 0, "embedding": [0.1, 0.2] }
+            ]
+        });
+        assert_eq!(
+            parse_embeddings(&v, 2).unwrap(),
+            vec![vec![0.1, 0.2], vec![0.3, 0.4]]
+        );
+        // A short count fails loudly rather than dropping a vector.
+        assert!(parse_embeddings(&v, 3).is_err());
+        // Missing `data` is an error, not an empty result.
+        assert!(parse_embeddings(&serde_json::json!({}), 0).is_err());
+    }
+
+    #[tokio::test]
+    async fn embed_empty_input_short_circuits() {
+        // No network call for an empty batch — base URL is bogus on purpose.
+        let client = LlmClient::new("http://127.0.0.1:1").unwrap();
+        assert_eq!(client.embed(&[]).await.unwrap(), Vec::<Vec<f32>>::new());
+    }
+
+    #[tokio::test]
+    async fn embed_parses_vectors_from_loopback() {
+        let base = serve_once("{\"data\":[{\"index\":0,\"embedding\":[0.5,0.25]}]}").await;
+        let client = LlmClient::new(base).unwrap();
+        let out = client.embed(&["hello".to_string()]).await.unwrap();
+        assert_eq!(out, vec![vec![0.5, 0.25]]);
     }
 
     /// One-shot loopback server that replies with a fixed body and closes (so
