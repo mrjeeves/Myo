@@ -8,6 +8,10 @@
 # Tauri build-time generated
 /src-tauri/gen
 
+# Build-time-staged engine sidecar: build.rs fetches/copies the pinned
+# `myownllm` into here (per `.myownllm-rev`); it's generated, never committed.
+/src-tauri/binaries/
+
 # OS / editor cruft
 .DS_Store
 *.swp

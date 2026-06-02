@@ -16,7 +16,9 @@
 //! | Module | Role |
 //! |---|---|
 //! | [`event`] | the normalized `myo://` intent stream the UI renders |
-//! | [`asr`] | the ears: POST open-mic audio to MyOwnLLM's `:1473` transcription route |
+//! | [`asr`] | the ears: POST captured audio to Myo's own engine (private `:11473`) |
+//! | [`engine`] | pinned-engine version/platform logic (self-heal a stale `myownllm`) |
+//! | [`llm`] | the native brain: streaming chat straight from MyOwnLLM (no Odysseus) |
 //! | [`brain`] | the Odysseus loopback client (multipart in, SSE → [`MyoEvent`] out) |
 //! | [`capabilities`] | the 4 toggles ⇄ Odysseus's `allow_*` + `disabled_tools` |
 //! | [`converse`] | one utterance→answer→voice turn |
@@ -28,7 +30,9 @@ pub mod brain;
 pub mod capabilities;
 pub mod config;
 pub mod converse;
+pub mod engine;
 pub mod event;
+pub mod llm;
 pub mod paths;
 pub mod supervisor;
 
@@ -36,5 +40,6 @@ pub use asr::AsrClient;
 pub use brain::{BrainClient, BrainConfig, TtsAudio};
 pub use capabilities::Capabilities;
 pub use config::ShellSettings;
-pub use converse::{run_turn, TurnAllocator};
+pub use converse::{run_turn, run_turn_native, TurnAllocator};
 pub use event::{channel, Emit, MyoEvent, TurnId};
+pub use llm::{ChatMessage, LlmClient, MYO_PERSONA};

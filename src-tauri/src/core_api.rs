@@ -43,20 +43,29 @@ pub async fn myo_engines_ensure_ready(app: AppHandle, state: Shared<'_>) -> Resu
     Ok(())
 }
 
+/// The engine's live streaming-transcription WebSocket URL
+/// (`ws://127.0.0.1:11473/v1/audio/stream`). The WebView connects here for
+/// real-time dictation: it streams 16 kHz mono i16-LE PCM up and reads interim
+/// + final caption frames down. Myo owns this engine on a private loopback port
+/// and runs it tokenless, so the socket needs no auth.
+#[tauri::command]
+pub fn myo_asr_stream_url() -> String {
+    myo_core::supervisor::myownllm_stream_url()
+}
+
 // ─── Converse ───────────────────────────────────────────────────────────────
 
 /// Run one converse turn for already-known text: echo it as the final
-/// transcript, then spawn the brain→TTS round-trip and return the turn id
-/// immediately so the UI can follow the `myo://` stream. Shared by the text
-/// path ([`myo_converse_say`]) and the voice paths ([`myo_converse_feed_audio`]
-/// / [`myo_converse_feed_wav`], which prepend ASR).
+/// transcript, then spawn the **native** brain→voice round-trip (Myo streams the
+/// reply straight from MyOwnLLM — no Odysseus) and return the turn id
+/// immediately so the UI can follow the `myo://` stream. Shared by the text path
+/// ([`myo_converse_say`]) and the voice paths ([`myo_converse_feed_audio`] /
+/// [`myo_converse_feed_wav`], which prepend ASR).
 async fn spawn_text_turn(
     app: AppHandle,
     state: Arc<MyoState>,
     text: String,
 ) -> Result<TurnId, String> {
-    let session = state.ensure_session().await.map_err(|e| e.to_string())?;
-    let (caps, incognito) = state.turn_context();
     let turn = state.turns.allocate();
 
     // Show what the user said straight away.
@@ -69,25 +78,30 @@ async fn spawn_text_turn(
         },
     );
 
+    // Assemble the conversation context natively — persona + running history +
+    // this user turn (recorded in history here). No Odysseus session involved.
+    let messages = state.chat_context(&text);
+
     let app_task = app.clone();
     let st = state.clone();
     let done = Arc::new(AtomicBool::new(false));
     let done_task = done.clone();
     let handle = tauri::async_runtime::spawn(async move {
         let mut sink = |ev: MyoEvent| emit(&app_task, ev);
-        if let Err(e) =
-            myo_core::run_turn(&st.brain, &session, &text, caps, incognito, turn, &mut sink).await
-        {
-            // Surface the failure and unblock the turn so the UI doesn't hang.
-            emit(
-                &app_task,
-                MyoEvent::Progress {
-                    turn,
-                    kind: "error".into(),
-                    data: json!({ "message": e.to_string() }),
-                },
-            );
-            emit(&app_task, MyoEvent::AssistantDone { turn });
+        match myo_core::run_turn_native(&st.llm, &messages, turn, &mut sink).await {
+            Ok(reply) => st.record_reply(reply),
+            Err(e) => {
+                // Surface the failure and unblock the turn so the UI doesn't hang.
+                emit(
+                    &app_task,
+                    MyoEvent::Progress {
+                        turn,
+                        kind: "error".into(),
+                        data: json!({ "message": e.to_string() }),
+                    },
+                );
+                emit(&app_task, MyoEvent::AssistantDone { turn });
+            }
         }
         done_task.store(true, Ordering::Relaxed);
     });

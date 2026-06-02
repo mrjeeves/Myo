@@ -18,14 +18,15 @@
     void last?.thinking;
     void last?.error;
     void last?.activity.length;
+    void myo.liveTranscript; // follow the live dictation caption too
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   });
 </script>
 
 <div class="conversation" bind:this={scroller}>
-  {#if myo.turns.length === 0}
+  {#if myo.turns.length === 0 && !myo.liveTranscript}
     <div class="empty">
-      <p>Say hello — Myo is listening.</p>
+      <p>{myo.asrStatus || "Say hello — Myo is listening."}</p>
       <p class="hint">It remembers across days, runs on your machine, and shows you its work.</p>
     </div>
   {/if}
@@ -52,6 +53,14 @@
       {/if}
     </div>
   {/each}
+
+  {#if myo.liveTranscript}
+    <!-- Live dictation: the words forming now, before the utterance finalizes
+         into a turn. Firms into a real user bubble the moment it's final. -->
+    <div class="turn">
+      <div class="user live">{myo.liveTranscript}</div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -88,6 +97,25 @@
     border-radius: 12px 12px 3px 12px;
     padding: 0.45rem 0.7rem;
     font-size: 0.86rem;
+  }
+  /* The live dictation caption — dimmed + italic until it finalizes, with a
+     soft blinking caret so it reads as "still being heard". */
+  .user.live {
+    background: #16202c;
+    border-style: dashed;
+    border-color: #2c4154;
+    color: #aebfcc;
+    font-style: italic;
+  }
+  .user.live::after {
+    content: "▍";
+    margin-left: 0.1rem;
+    animation: caret 1.1s step-end infinite;
+  }
+  @keyframes caret {
+    50% {
+      opacity: 0;
+    }
   }
   .assistant {
     align-self: flex-start;

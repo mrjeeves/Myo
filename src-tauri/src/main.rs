@@ -15,10 +15,13 @@
 // window launches without a console flash) is a later Windows task.
 
 mod core_api;
+mod engine_update;
 mod events;
 mod state;
 mod supervisor;
 mod update_commands;
+#[cfg(windows)]
+mod windows;
 
 use update_commands::{
     update_apply_now, update_check_now, update_leftovers_clear, update_leftovers_list,
@@ -83,6 +86,13 @@ async fn dispatch(args: Vec<String>) -> anyhow::Result<()> {
 /// bring the engines up, and start the background watcher — all on Tauri's
 /// async runtime.
 fn run_gui() {
+    // Windows/dev: if a parent like `cargo` (under `just dev`) dies, come down
+    // with it so the engines Myo spawned don't orphan — a Tauri GUI app detaches
+    // from the terminal, so a shell Ctrl-C never reaches it. No-op for
+    // Explorer-launched / installed runs.
+    #[cfg(windows)]
+    windows::install_parent_watchdog();
+
     // A bare `myo` on a headless box would otherwise exit silently when the
     // webview can't find a display — point the user at the CLI instead.
     #[cfg(target_os = "linux")]
@@ -92,10 +102,12 @@ fn run_gui() {
         std::process::exit(1);
     }
 
-    // Build the shared state up front: mint the brain's internal token (injected
-    // into Odysseus's env when the supervisor spawns it), load persisted
+    // Build the shared state up front: load the persisted brain token (injected
+    // into Odysseus's env when the supervisor spawns it — persisted, not minted
+    // per-launch, so Myo can reuse / re-attach to a brain a previous run left
+    // running without a token mismatch 403'ing every call), load persisted
     // settings, and create the loopback brain client.
-    let token = myo_core::supervisor::random_token();
+    let token = myo_core::supervisor::persistent_token();
     let settings = myo_core::ShellSettings::load().unwrap_or_default();
     let brain = myo_core::BrainClient::new(myo_core::BrainConfig::new(
         myo_core::supervisor::odysseus_base_url(),
@@ -103,12 +115,18 @@ fn run_gui() {
         "myo",
     ))
     .expect("failed to build the brain client");
-    // The ears: a loopback client for MyOwnLLM's transcription route. Built up
-    // front (like the brain) so commands can reference it; its calls just fail
-    // until the model engine is serving on :1473.
+    // The ears: an HTTP client for Myo's *own* engine on its private port
+    // (`:11473`, not the shared `:1473`), so transcription never attaches to a
+    // user's separately-run / stale MyOwnLLM.
     let asr = myo_core::AsrClient::new(myo_core::supervisor::myownllm_base_url())
         .expect("failed to build the ASR client");
-    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, settings));
+    // The native brain: streams chat straight from MyOwnLLM (the same private
+    // engine the ears use), so a conversation needs no Odysseus brain.
+    let llm = myo_core::LlmClient::new(myo_core::supervisor::myownllm_base_url())
+        .expect("failed to build the LLM client");
+    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, llm, settings));
+    // A clone for the exit hook below (the setup closure moves the other one).
+    let exit_state = app_state.clone();
 
     tauri::Builder::default()
         .manage(app_state.clone())
@@ -121,6 +139,7 @@ fn run_gui() {
             update_leftovers_clear,
             core_api::myo_engines_status,
             core_api::myo_engines_ensure_ready,
+            core_api::myo_asr_stream_url,
             core_api::myo_converse_say,
             core_api::myo_converse_cancel,
             core_api::myo_converse_feed_wav,
@@ -142,8 +161,17 @@ fn run_gui() {
             tauri::async_runtime::spawn(supervisor::ensure_ready(app_handle, app_state.clone()));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running myo");
+        .build(tauri::generate_context!())
+        .expect("error while building myo")
+        .run(move |_app_handle, event| {
+            // When Myo closes, close the engines it started — so the whole stack
+            // comes down with it (and each engine, like MyOwnLLM, closes its own
+            // children in turn). Tauri may `process::exit` on close without
+            // unwinding, so kill-on-Drop alone wouldn't fire; do it here.
+            if let tauri::RunEvent::Exit = event {
+                exit_state.shutdown();
+            }
+        });
 }
 
 fn print_help() {

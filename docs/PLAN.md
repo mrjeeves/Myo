@@ -1,5 +1,15 @@
 # Myo — Integration Plan
 
+> **Status (voice loop) → see [`voice-handoff.md`](voice-handoff.md) to continue.**
+> Step 4's voice round-trip is **wired end-to-end today** (always-on mic →
+> MyOwnLLM transcription → Odysseus → TTS). Myo now owns its brain + model engine
+> on **private ports** (`:17000` / `:11473`) so it never attaches to a foreign or
+> orphaned instance (fixes the 404/403). **Next milestone: real-time streaming
+> dictation + full-duplex (barge-in)** — the engine half (a streaming WebSocket
+> on MyOwnLLM `serve`) is built (MyOwnLLM #227); the Myo frontend streaming +
+> a `0.2.24` pin bump are the remaining work. NB: the `myo-asr` extraction in
+> Step 2 below is **deferred** — transcription rides the engine's HTTP/WS instead.
+
 ## Context
 
 You maintain three complementary local-AI projects: **Odysseus** (`/home/user/odysseus`, Python/FastAPI + JS-PWA — a deep agentic brain: agent loop, tools, RAG, email/calendar/docs/research, TTS; v0.9.1, MIT, third-party), **MyOwnLLM** (`/home/user/MyOwnLLM`, Tauri 2 + Svelte 5 — excellent voice-in ASR/diarization, automatic hardware-tier model selection, an OpenAI server on `:1473`, one-line install), and **MyOwnMesh** (`/home/user/MyOwnMesh`, pure-Rust tailscale-less mesh: WebRTC + Nostr signaling + ed25519 + 6-char pairing; already embedded by MyOwnLLM).

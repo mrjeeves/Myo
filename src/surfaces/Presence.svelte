@@ -11,7 +11,7 @@
   };
 </script>
 
-<div class="presence" data-phase={myo.phase} title={labels[myo.phase]}>
+<div class="presence" data-phase={myo.phase} title={myo.asrStatus || labels[myo.phase]}>
   <span class="orb"></span>
   <span class="label">{labels[myo.phase]}</span>
 </div>
