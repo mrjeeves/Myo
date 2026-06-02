@@ -67,6 +67,14 @@ export interface MemoryItem {
 const MAX_TURNS = 50;
 const MAX_ACTIVITY = 60;
 
+// Barge-in tuning. Myo talks straight through a stray word or two (echo bleed, a
+// quick "mm-hm"); she only yields the floor when you *keep* talking over her for
+// this long while she's speaking. A pause longer than the gap restarts the
+// window, so the talk-over has to be sustained — not just a word now and a word
+// later — which also makes it robust to imperfect echo cancellation.
+const BARGE_IN_MS = 2000;
+const BARGE_SUSTAIN_GAP_MS = 600;
+
 function blankTurn(id: TurnId): Turn {
   return {
     id,
@@ -128,7 +136,27 @@ class MyoStore {
   // real-time WebSocket dictation; `listener` is the clip/energy-VAD fallback.
   private streamer?: StreamingListener;
   private listener?: Listener;
-  private activeTurn: TurnId | null = null;
+  // Myo no longer cancels a reply when you keep talking — several turns can be
+  // generating at once. These are the turn ids still in flight (added when a turn
+  // opens, removed once it produces audio, finishes empty, or errors); the phase
+  // reads "thinking" while any remain.
+  private generating = new Set<TurnId>();
+  // Replies are voiced one at a time, in the order they come back, so Myo never
+  // talks over herself. `audioPlaying` plus a `playToken` (bumped to abandon the
+  // clip in progress on barge-in) drive the "speaking" phase.
+  private audioQueue: AudioEvent[] = [];
+  private audioPlaying = false;
+  private playToken = 0;
+  // Barge-in watermark: turns whose id is at or below this don't get voiced. Set
+  // to the newest in-flight turn when the user takes the floor, so replies
+  // already on their way finish silently (still streamed + remembered) rather
+  // than talking over the user; newer turns (what the user just said) still speak.
+  private speakMuteThrough = 0;
+  // The highest turn id seen, so a barge-in can mute exactly what's in flight now.
+  private lastTurnId = 0;
+  // Sustained-talk-over tracking for barge-in (timestamps in ms; 0 = no window).
+  private talkOverStart = 0;
+  private lastUserVoiceAt = 0;
   // The artifact currently being streamed (target for delta/update), tracked
   // separately from `focusedArtifact` (what's on the stage) so recalling an
   // older doc mid-stream can't corrupt it.
@@ -145,16 +173,6 @@ class MyoStore {
 
   /** Wire up the stream and pull initial state. Call once on mount. */
   async init() {
-    this.voice.onStateChange = (s) => {
-      if (s === "speaking") {
-        this.phase = "speaking";
-      } else if (this.activeTurn === null) {
-        this.toIdle();
-      } else {
-        this.phase = "thinking";
-      }
-    };
-
     this.unlisten = await listenMyo({
       assistant: (e) => this.onAssistant(e),
       transcript: (e) => this.onTranscript(e),
@@ -193,17 +211,19 @@ class MyoStore {
 
   // ── Listening (always-on mic) ────────────────────────────────────────────────
 
-  /** Phase once a turn settles: keep listening if the mic is live (and not
-   *  muted), else idle. Also drops the capture gate raised while Myo was busy,
-   *  so her ears reopen the instant she stops thinking/speaking. */
-  private toIdle() {
-    if ((this.streamer?.running || this.listener?.running) && !this.muted) {
-      // Streaming stays full-duplex (no gate); the clip listener reopens its ears.
-      this.listener?.setGated(false);
+  /** Recompute the phase from the live state — the single source of truth now
+   *  that turns overlap. Precedence: speaking (a reply is playing) over thinking
+   *  (a reply is still generating) over listening (mic live) over idle. Also
+   *  (re)sets the half-duplex gate: the clip listener is deaf while Myo is busy
+   *  so it can't transcribe her own voice; the streamer is full-duplex and never
+   *  gated here. */
+  private syncPhase() {
+    if (this.audioPlaying) this.phase = "speaking";
+    else if (this.generating.size > 0) this.phase = "thinking";
+    else if ((this.streamer?.running || this.listener?.running) && !this.muted)
       this.phase = "listening";
-    } else {
-      this.phase = "idle";
-    }
+    else this.phase = "idle";
+    this.listener?.setGated(this.phase === "thinking" || this.phase === "speaking");
   }
 
   private gateMic(on: boolean) {
@@ -246,7 +266,7 @@ class MyoStore {
     this.micReady = true;
     this.listening = true;
     this.muted = false;
-    if (this.activeTurn === null) this.toIdle();
+    this.syncPhase();
   }
 
   /** Fallback path: the energy-VAD clip listener (one WAV POST per utterance). */
@@ -263,7 +283,7 @@ class MyoStore {
           this.micReady = false;
           this.listening = false;
           this.listener = undefined;
-          if (this.activeTurn === null) this.phase = "idle";
+          this.syncPhase();
         },
       });
     try {
@@ -272,7 +292,7 @@ class MyoStore {
       this.micReady = true;
       this.listening = true;
       this.muted = false;
-      if (this.activeTurn === null) this.toIdle();
+      this.syncPhase();
     } catch (e) {
       console.warn("[myo] could not start listening (falling back to typing):", e);
       this.micReady = false;
@@ -281,26 +301,31 @@ class MyoStore {
 
   // ── Streaming-dictation handlers ───────────────────────────────────────────
 
-  /** A new utterance is forming. Light up "listening" if idle; the actual
-   *  barge-in happens on the *final* (see onFinal), which is robust against
-   *  echo-cancellation bleed finalizing a stray word of Myo's own reply. */
+  /** A new utterance is forming. Feed the barge-in monitor (the user starting to
+   *  talk is the first beat of a possible talk-over) and light up "listening"
+   *  when Myo is otherwise free. */
   private onStreamSpeechStart() {
-    if (this.activeTurn === null && !this.muted && this.phase === "idle") {
-      this.phase = "listening";
+    this.noteUserVoiceActivity();
+    if (this.generating.size === 0 && !this.audioPlaying && !this.muted) {
+      this.syncPhase();
     }
   }
 
-  /** Live caption refines as the user speaks — replace it in place. */
+  /** Live caption refines as the user speaks — replace it in place, and count
+   *  each refinement as "still talking" for the barge-in window. */
   private onInterim(text: string) {
     this.liveTranscript = text;
+    this.noteUserVoiceActivity();
   }
 
-  /** A finalized utterance: run it as a turn. This is full-duplex barge-in —
-   *  runUserTurn cancels any in-flight turn and hushes playback first, and does
-   *  NOT gate the mic, so Myo keeps listening straight through her own reply. */
+  /** A finalized utterance: open it as a turn. Full-duplex and *non-cancelling* —
+   *  it never stops the turns already in flight, it just adds another, and every
+   *  turn carries the whole conversation. (If the user kept talking over Myo, the
+   *  interim stream has already hushed her playback — see noteUserVoiceActivity.) */
   private async onFinal(text: string) {
     this.liveTranscript = "";
-    await this.runUserTurn(text, /* gate */ false);
+    this.talkOverStart = 0; // the utterance closed; reopen the barge-in window
+    await this.runUserTurn(text);
   }
 
   /** Engine subtitle off the stream ("Loading model…", "Listening…", errors). */
@@ -339,12 +364,12 @@ class MyoStore {
         // First user gesture: unlock a context that started suspended (autoplay
         // policy) rather than muting — so the button reliably *enables* the ears.
         await active.resume();
-        if (this.activeTurn === null) this.toIdle();
+        this.syncPhase();
         return;
       }
       this.stopListening();
       this.muted = true;
-      if (this.activeTurn === null) this.phase = "idle";
+      this.syncPhase();
     } else {
       this.muted = false;
       await this.startListening();
@@ -352,74 +377,131 @@ class MyoStore {
   }
 
   private onSpeechStart() {
-    // Barge-in hook: the mic is gated while Myo thinks/speaks (half-duplex), so
-    // onset only fires when she's idle — reflect that she's actively hearing you.
-    if (this.activeTurn === null && !this.muted) this.phase = "listening";
+    // The clip listener is gated (half-duplex) while Myo thinks/speaks, so onset
+    // only fires when she's free — reflect that she's actively hearing you.
+    if (this.generating.size === 0 && !this.audioPlaying && !this.muted) {
+      this.syncPhase();
+    }
   }
 
   private async onUtterance(wav: Blob) {
-    // Gate first (before any await) so the half-duplex mic can't capture Myo's
-    // own reply mid-turn, then close out any stray live turn.
+    // The clip path is half-duplex: gate first (before any await) so it can't
+    // capture Myo's own reply while this turn works. No cancel and no hush — a
+    // new utterance opens another turn alongside any already in flight.
     this.gateMic(true);
-    this.voice.stop();
-    if (this.activeTurn !== null) {
-      await api.cancel(this.activeTurn).catch(() => {});
-      this.activeTurn = null;
-    }
     this.phase = "thinking";
     try {
       const b64 = await blobToBase64(wav);
       const turn = await api.feedAudio(b64, "audio/wav");
-      if (turn == null) {
-        // Nothing intelligible (silence / noise) — reopen the ears.
-        this.activeTurn = null;
-        this.toIdle();
-      } else {
-        this.activeTurn = turn;
-      }
+      if (turn != null) this.noteTurn(turn);
+      else this.syncPhase(); // nothing intelligible (silence / noise)
     } catch (e) {
       console.error("[myo] transcription failed", e);
       this.pushErrorTurn(String(e));
-      this.activeTurn = null;
-      this.toIdle();
+      this.syncPhase();
     }
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
   async say(text: string) {
-    // Gate the mic only when NOT streaming: the clip listener would otherwise
-    // transcribe Myo's own reply, while streaming runs full-duplex on purpose.
-    await this.runUserTurn(text, /* gate */ !this.streamer?.running);
+    await this.runUserTurn(text);
   }
 
-  /** Run one user turn (shared by the text composer and the voice paths): cancel
-   *  any in-flight turn (barge-in), hush playback, fire the brain→TTS round-trip.
-   *  `gate` mutes the clip listener for the turn; streaming passes `false`. */
-  private async runUserTurn(text: string, gate: boolean) {
+  /** Open one user turn (shared by the text composer and the voice paths). It
+   *  never cancels or hushes what's already running — each call just adds another
+   *  turn, and because every turn carries the whole conversation, Myo can let the
+   *  earlier replies finish and simply interject the new one when it's ready. */
+  private async runUserTurn(text: string) {
     const t = text.trim();
     if (!t) return;
-    // A new utterance while a turn is live is barge-in: cancel the old one
-    // first so its bookkeeping isn't orphaned and two turns don't overlap.
-    if (this.activeTurn !== null) await this.cancel();
-    if (gate) this.gateMic(true);
-    this.voice.stop();
-    this.phase = "thinking";
     try {
-      this.activeTurn = await api.say(t);
+      const turn = await api.say(t);
+      this.noteTurn(turn);
     } catch (e) {
       this.pushErrorTurn(String(e));
-      this.toIdle();
+      this.syncPhase();
     }
   }
 
-  async cancel() {
+  /** Stop Myo *talking* right now — the manual barge-in behind the composer's
+   *  Stop button, and the same thing a sustained talk-over triggers. It hushes
+   *  playback, drops anything queued to be voiced, and silences the replies
+   *  already in flight (they still finish and are remembered — Myo just won't
+   *  speak them). It deliberately does NOT cancel the generations: each turn
+   *  carries the whole conversation, so there's nothing to gain by killing one. */
+  hush() {
+    this.audioQueue = [];
+    this.speakMuteThrough = this.lastTurnId;
+    this.playToken++; // make the in-flight pump bow out without resetting state
+    this.audioPlaying = false;
     this.voice.stop();
-    if (this.activeTurn !== null) {
-      await api.cancel(this.activeTurn).catch(() => {});
+    this.talkOverStart = 0;
+    this.syncPhase();
+  }
+
+  // ── Voicing queue + barge-in ───────────────────────────────────────────────
+
+  /** Track a freshly opened turn: it's now generating, and it's the newest turn
+   *  id (so a later barge-in knows exactly how far to mute). */
+  private noteTurn(turn: TurnId) {
+    this.generating.add(turn);
+    if (turn > this.lastTurnId) this.lastTurnId = turn;
+    this.syncPhase();
+  }
+
+  /** Fold one beat of user speech into the barge-in window. While Myo is
+   *  speaking, *sustained* talk-over (continuous voice for `BARGE_IN_MS`, with no
+   *  gap longer than `BARGE_SUSTAIN_GAP_MS`) is her cue to stop. While she's not
+   *  speaking, talking never interrupts — it only opens more turns. */
+  private noteUserVoiceActivity() {
+    const now = performance.now();
+    if (!this.audioPlaying) {
+      this.talkOverStart = 0;
+      this.lastUserVoiceAt = now;
+      return;
     }
-    this.activeTurn = null;
-    this.toIdle();
+    // A gap since the last beat means the user paused — restart the window so
+    // only continuous talk-over counts toward the threshold.
+    if (this.talkOverStart === 0 || now - this.lastUserVoiceAt > BARGE_SUSTAIN_GAP_MS) {
+      this.talkOverStart = now;
+    }
+    this.lastUserVoiceAt = now;
+    if (now - this.talkOverStart >= BARGE_IN_MS) this.hush();
+  }
+
+  /** Queue a turn's audio for voicing — unless the turn was already barged past
+   *  (its id is at or below the mute watermark), in which case it stays silent. */
+  private enqueueAudio(e: AudioEvent) {
+    if (e.turn <= this.speakMuteThrough) return;
+    const hasAudio = (e.kind === "ready" && !!e.b64) || (e.kind === "speak" && !!e.text);
+    if (!hasAudio) return;
+    this.audioQueue.push(e);
+    void this.pumpAudio();
+  }
+
+  /** Drain the voicing queue one clip at a time so replies never overlap. Only
+   *  one pump runs at once (guarded by `audioPlaying`); a barge-in bumps
+   *  `playToken`, which makes the in-flight pump bow out quietly instead of
+   *  clobbering the state `hush()` just reset. */
+  private async pumpAudio() {
+    if (this.audioPlaying) return;
+    this.audioPlaying = true;
+    const token = ++this.playToken;
+    this.syncPhase(); // → speaking
+    while (this.audioQueue.length && token === this.playToken) {
+      const e = this.audioQueue.shift()!;
+      if (e.turn <= this.speakMuteThrough) continue; // barged past while queued
+      if (e.kind === "ready" && e.b64) {
+        await this.voice.playBase64(e.b64, e.mime ?? "audio/mpeg");
+      } else if (e.kind === "speak" && e.text) {
+        await this.voice.speakAsync(e.text);
+      }
+    }
+    if (token === this.playToken) {
+      this.audioPlaying = false;
+      this.syncPhase();
+    }
   }
 
   /** User flips a capability: reflect it and push to the brain. */
@@ -508,6 +590,7 @@ class MyoStore {
   // ── Stream reducer ───────────────────────────────────────────────────────
 
   private turnById(id: TurnId): Turn {
+    if (id > this.lastTurnId) this.lastTurnId = id;
     let t = this.turns.find((x) => x.id === id);
     if (!t) {
       t = blankTurn(id);
@@ -522,13 +605,13 @@ class MyoStore {
     if (e.kind === "delta" && e.text) {
       t.assistant += e.text;
       this.brainHasSpoken = true; // the model produced output → it's resident
-      this.phase = "thinking";
     } else if (e.kind === "done") {
       t.done = true;
-      // If there was nothing to voice, the turn is over now.
-      if (!t.assistant.trim() && this.activeTurn === e.turn) {
-        this.activeTurn = null;
-        this.toIdle();
+      // A reply with text gets voiced next (AudioReady/AudioSpeak follows and
+      // settles the turn); one with nothing to say is finished right here.
+      if (!t.assistant.trim()) {
+        this.generating.delete(e.turn);
+        this.syncPhase();
       }
     }
   }
@@ -624,29 +707,18 @@ class MyoStore {
     } else if (e.kind === "error") {
       t.error = (e.data as { message?: string })?.message ?? "error";
       t.done = true;
-      if (this.activeTurn === e.turn) {
-        this.activeTurn = null;
-        this.toIdle();
-      }
+      this.generating.delete(e.turn);
+      this.syncPhase();
     }
   }
 
   private onAudio(e: AudioEvent) {
-    // The brain's work for this turn is finished once we have audio; what
-    // remains is playback, which the Voice controller reflects as the
-    // "speaking" phase (and then "idle"). Clearing activeTurn now means the
-    // post-playback idle callback resolves to "idle", not back to "thinking".
-    if (this.activeTurn === e.turn) this.activeTurn = null;
-    if (e.kind === "ready" && e.b64) {
-      void this.voice.playBase64(e.b64, e.mime ?? "audio/mpeg");
-    } else if (e.kind === "speak" && e.text) {
-      this.voice.speak(e.text);
-    }
-    // If no playback actually started (missing audio blob, or no speech engine
-    // available), the Voice "speaking" callback never fires — settle to idle
-    // now so the UI can't get stuck on "thinking". (When playback DID start,
-    // `playBase64`/`speak` already set the phase to "speaking" synchronously.)
-    if (this.phase !== "speaking") this.toIdle();
+    // The brain's work for this turn is done; what's left is voicing it (unless
+    // it was barged past). Hand it to the queue so replies are spoken one at a
+    // time, in the order they came back, rather than cutting each other off.
+    this.generating.delete(e.turn);
+    this.enqueueAudio(e);
+    this.syncPhase();
   }
 
   private onEngine(e: EngineEvent) {

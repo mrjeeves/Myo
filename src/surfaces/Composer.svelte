@@ -1,7 +1,8 @@
 <script lang="ts">
   // Talk to Myo. She's always listening (open-mic), so the mic button is a
   // one-tap hard-mute — not a press-to-talk. Typing stays a first-class
-  // fallback. Send while a turn runs becomes Stop (barge-in / cancel).
+  // fallback. While a turn runs, Send becomes Stop, which hushes Myo's voice
+  // (the manual barge-in) without cancelling what she's working on.
   import { myo } from "../lib/stage.svelte";
 
   let text = $state("");
@@ -38,7 +39,7 @@
     spellcheck="false"
   />
   {#if busy}
-    <button type="button" class="stop" onclick={() => myo.cancel()}>Stop</button>
+    <button type="button" class="stop" onclick={() => myo.hush()}>Stop</button>
   {:else}
     <button type="submit" class="send" disabled={!text.trim()}>Send</button>
   {/if}

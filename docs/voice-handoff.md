@@ -11,9 +11,11 @@ Voice runs **end-to-end** in **two modes**:
 1. **Real-time streaming dictation + full-duplex** (the primary path) — the
    WebView streams 16 kHz PCM to the engine's live WebSocket, renders **interim**
    captions as you speak, fires the **native brain** turn on each **final**, and
-   keeps listening through Myo's own reply so you can **barge in**. It lights up
-   against a `myownllm` that serves `/v1/audio/stream` — guaranteed by the pin
-   (`.myownllm-rev`).
+   keeps listening through Myo's own reply. Turns **overlap** rather than cancel:
+   keep talking and she just opens another (each carries the whole conversation),
+   answering them in turn, and she only stops *speaking* if you keep talking over
+   her — see *Turn-taking* below. It lights up against a `myownllm` that serves
+   `/v1/audio/stream` — guaranteed by the pin (`.myownllm-rev`).
 2. **Clip-at-a-time** (the fallback) — always-on mic → energy-VAD utterance →
    one-shot transcription → turn. Used automatically when the streaming socket
    can't be reached (engine too old / unreachable).
@@ -31,9 +33,11 @@ the same native brain → TTS turn.
   in [`Conversation.svelte`](../src/surfaces/Conversation.svelte) via
   `myo.liveTranscript`); each **final** runs the brain turn through the proven
   `api.say` text path ([`stage.svelte.ts`](../src/lib/stage.svelte.ts)
-  `onInterim`/`onFinal`). **Full-duplex:** the mic is never gated during a reply,
-  so a final mid-reply **barges in** (cancels + restarts). Falls back to the clip
-  path if the socket can't be reached.
+  `onInterim`/`onFinal`). **Full-duplex, non-cancelling:** the mic is never gated
+  during a reply, so a final mid-reply opens *another* turn instead of cancelling
+  the one running, and replies are **voiced in order** so Myo never talks over
+  herself — she only stops speaking on a **sustained talk-over** (see *Turn-taking*
+  below). Falls back to the clip path if the socket can't be reached.
 - **Always-on open-mic capture** in the WebView — `getUserMedia`
   (echo-cancellation). The clip fallback ([`audio-io.ts`](../src/lib/audio-io.ts)
   `Listener`) segments utterances with a lightweight energy VAD and is
@@ -86,6 +90,31 @@ the engine changes):
 The warm model (the session loads once) removes the per-utterance reload latency
 the clip path has.
 
+## Turn-taking: overlap, never cancel
+
+People keep talking until something interrupts them, so Myo treats speech as a
+**stream**, not a walkie-talkie. A new utterance never cancels the turn already
+running — it just opens **another** one. Several can be in flight at once, and
+because each chat completion sends the **whole conversation**, every turn has the
+full context; the brain simply *interjects* its reply when it's ready.
+
+- **Generations are never cancelled.** They always finish and are recorded, so the
+  context stays complete even when you talk over a half-formed answer.
+- **Replies are voiced in order**, one at a time (a small queue in
+  [`stage.svelte.ts`](../src/lib/stage.svelte.ts) — `enqueueAudio` / `pumpAudio`),
+  so Myo never talks over herself; their **text** lands in each turn's own bubble,
+  so the timeline reads top-to-bottom no matter which model call returns first.
+- **Barge-in stops *speaking*, not *thinking*.** Only when you keep talking over
+  her for ~`BARGE_IN_MS` *while she's speaking* does she yield the floor:
+  `hush()` stops playback, drops what's queued, and silences the replies already
+  in flight (they still finish and are remembered — their text still shows, she
+  just doesn't read them aloud). The composer's **Stop** button is the manual form
+  of the same thing. Requiring *sustained* talk-over (not one stray word) is what
+  keeps it robust to echo-cancellation bleed — see `noteUserVoiceActivity`.
+- **History stays in turn order.** Turns can finish out of order, so each reply is
+  slotted back behind its own user line in [`state.rs`](../src-tauri/src/state.rs)
+  (`History`), keeping the transcript coherent for the next turn's context.
+
 ## Refinements still open
 
 1. **Verify on-device** — the streaming loop end-to-end (interim captions firming
@@ -128,9 +157,12 @@ the clip path has.
 - **One-shot `/v1/audio/transcriptions` rebuilds the model per call** — fine for
   the clip path, but the streaming WS avoids it entirely (warm session).
 - **Full-duplex relies on echo-cancellation.** The streaming path never gates the
-  mic during a reply (that's the point — barge-in). If a machine's AEC is weak,
-  Myo could transcribe her own TTS and barge in on herself; the documented degrade
-  is `streamer.setGated(true)` while `speaking` (see "Refinements" #1).
+  mic during a reply (that's the point — talk-over barge-in). If a machine's AEC is
+  weak, Myo could transcribe her own TTS — but barge-in needs **sustained**
+  talk-over (`BARGE_IN_MS`), so a stray bleed word won't make her stop, and any
+  bleed that does get transcribed just opens a turn whose reply queues harmlessly.
+  The full remedy for a bad AEC is still the `streamer.setGated(true)` while
+  `speaking` degrade (see "Refinements" #1).
 - **Streaming falls back to clip, not the other way.** `startListening` tries the
   WS first; on a persistent connect failure `StreamingListener` gives up (bounded
   reconnect) and the store switches to the clip `Listener`. A too-old engine (no

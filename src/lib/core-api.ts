@@ -47,6 +47,9 @@ export const api = {
 
   /** Text bypass: returns the allocated turn id. */
   say: (text: string) => invoke<TurnId>("myo_converse_say", { text }),
+  /** Explicit hard-cancel of a turn's generation. The conversational flow never
+   *  calls this — talking over Myo hushes her voice (see `stage.hush`) instead of
+   *  killing the turn; this is the last-resort "force stop". */
   cancel: (turn: TurnId) => invoke<boolean>("myo_converse_cancel", { turn }),
   /** Voice path: base64 WAV in → transcribe → turn. `null` = empty transcript. */
   feedAudio: (audio: string, mime: string) =>

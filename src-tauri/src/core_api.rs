@@ -80,7 +80,7 @@ async fn spawn_text_turn(
 
     // Assemble the conversation context natively — persona + running history +
     // this user turn (recorded in history here). No Odysseus session involved.
-    let messages = state.chat_context(&text);
+    let messages = state.chat_context(turn, &text);
     let caps = state.capabilities();
 
     let app_task = app.clone();
@@ -100,7 +100,7 @@ async fn spawn_text_turn(
         )
         .await
         {
-            Ok(reply) => st.record_reply(reply),
+            Ok(reply) => st.record_reply(turn, reply),
             Err(e) => {
                 // Surface the failure and unblock the turn so the UI doesn't hang.
                 emit(
@@ -132,8 +132,14 @@ pub async fn myo_converse_say(
     spawn_text_turn(app, state.inner().clone(), text).await
 }
 
-/// Cancel an in-flight turn (barge-in or an explicit stop). Returns whether a
-/// turn was actually running.
+/// Hard-cancel an in-flight turn: abort its generation outright. Returns whether
+/// a turn was actually running.
+///
+/// This is the explicit, last-resort stop — *not* the conversational barge-in.
+/// Talking over Myo never lands here: she lets every turn finish (each one
+/// carries the whole conversation, so there's nothing to gain by killing one)
+/// and the shell simply hushes her voice when you take the floor. Kept for an
+/// explicit "force stop" and teardown.
 #[tauri::command]
 pub fn myo_converse_cancel(turn: TurnId, app: AppHandle, state: Shared<'_>) -> bool {
     let cancelled = state.cancel_task(turn);

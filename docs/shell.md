@@ -34,7 +34,7 @@ Tauri commands the frontend invokes ([`src-tauri/src/core_api.rs`](../src-tauri/
 | `myo_asr_stream_url` → `ws://…/v1/audio/stream` | the engine's **live dictation** WebSocket (the streaming voice path connects here) |
 | `myo_converse_say{text}` → `turnId` | the **text path**: native brain answer (streamed) → voice. Also how the streaming voice path runs a finalized utterance. |
 | `myo_converse_feed_audio{audio,mime}` → `turnId?` | the **clip voice path** (fallback): base64 WAV → MyOwnLLM transcription → turn (`null` = silence/empty) |
-| `myo_converse_cancel{turn}` | barge-in / stop an in-flight turn |
+| `myo_converse_cancel{turn}` | explicit **hard-stop** of an in-flight turn (force-stop / teardown). The conversational flow never cancels — turns overlap and talking over Myo only hushes her voice (frontend); see [`voice-handoff.md`](voice-handoff.md). |
 | `myo_converse_feed_wav{path}` → `turnId?` | WAV-**file** bypass (CI / "transcribe this file") → turn |
 | `myo_capabilities_get` / `myo_capabilities_set{caps}` | the four Web/Files/Code/Reach-out toggles |
 | `myo_converse_incognito{on}` | pause memory (privacy) |
