@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use myo_core::{
-    AsrClient, BrainClient, Capabilities, ChatMessage, LlmClient, ShellSettings, TtsClient,
+    AsrClient, BrainClient, Capabilities, LlmClient, Memory, ShellSettings, TtsClient,
     TurnAllocator, TurnId, WebSearch, MYO_PERSONA,
 };
 
@@ -59,14 +59,16 @@ pub struct MyoState {
     pub tts: TtsClient,
     /// Myo's **native brain**: streams replies straight from MyOwnLLM's
     /// OpenAI-compatible endpoint, so a conversation needs no Odysseus (see
-    /// `docs/native-agent.md`).
-    pub llm: LlmClient,
+    /// `docs/native-agent.md`). Shared (`Arc`) so memory tools can embed through
+    /// it from inside a tool task.
+    pub llm: Arc<LlmClient>,
     /// The shared web-search client the native `web_search` tool uses (keyless
     /// DuckDuckGo by default; configurable to a SearXNG instance).
     pub web: Arc<WebSearch>,
-    /// The running conversation (user/assistant turns) Myo keeps itself — the
-    /// seed of native memory. The persona is prepended per turn, not stored here.
-    history: Mutex<Vec<ChatMessage>>,
+    /// Myo's memory — working (recent conversation) + long-term (durable,
+    /// embedded) layers. Owns what was the in-process history; the persona is
+    /// prepended per turn, not stored here.
+    pub memory: Arc<Memory>,
     /// Allocates a fresh turn id per utterance.
     pub turns: TurnAllocator,
     /// The persisted shell settings (capabilities + incognito).
@@ -94,8 +96,9 @@ impl MyoState {
         brain: BrainClient,
         asr: AsrClient,
         tts: TtsClient,
-        llm: LlmClient,
+        llm: Arc<LlmClient>,
         web: Arc<WebSearch>,
+        memory: Arc<Memory>,
         settings: ShellSettings,
     ) -> Self {
         Self {
@@ -105,7 +108,7 @@ impl MyoState {
             tts,
             llm,
             web,
-            history: Mutex::new(Vec::new()),
+            memory,
             turns: TurnAllocator::new(),
             settings: Mutex::new(settings),
             children: Mutex::new(Vec::new()),
@@ -116,6 +119,11 @@ impl MyoState {
     /// The current capability toggles (which tools the agent loop may offer).
     pub fn capabilities(&self) -> Capabilities {
         self.settings.lock().unwrap().capabilities
+    }
+
+    /// Whether memory is paused for this conversation (incognito).
+    pub fn incognito(&self) -> bool {
+        self.settings.lock().unwrap().incognito
     }
 
     /// The system prompt every turn opens with: the user's custom persona when
@@ -135,38 +143,6 @@ impl MyoState {
             .as_deref()
             .map(str::trim)
             .is_some_and(|p| !p.is_empty())
-    }
-
-    /// Assemble the chat context for a new user turn — Myo's persona, the
-    /// running history, and this message — recording the user message in history
-    /// as we go (so a barge-in mid-reply still leaves the turn on the record).
-    /// History is capped so the context stays bounded.
-    pub fn chat_context(&self, user_text: &str) -> Vec<ChatMessage> {
-        const MAX_HISTORY: usize = 40;
-        // Resolve the system prompt first (locks `settings`, then drops it) so we
-        // never hold the `history` and `settings` locks simultaneously.
-        let persona = self.persona();
-        let mut hist = self.history.lock().unwrap();
-        hist.push(ChatMessage::user(user_text));
-        if hist.len() > MAX_HISTORY {
-            let cut = hist.len() - MAX_HISTORY;
-            hist.drain(0..cut);
-        }
-        let mut messages = Vec::with_capacity(hist.len() + 1);
-        messages.push(ChatMessage::system(persona));
-        messages.extend(hist.iter().cloned());
-        messages
-    }
-
-    /// Record Myo's reply in the running history (an empty reply is skipped).
-    pub fn record_reply(&self, text: String) {
-        if text.trim().is_empty() {
-            return;
-        }
-        self.history
-            .lock()
-            .unwrap()
-            .push(ChatMessage::assistant(text));
     }
 
     /// Tear down every engine Myo *spawned* — each [`EngineChild`]'s `Drop` kills

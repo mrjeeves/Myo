@@ -203,15 +203,7 @@ mod tests {
 
     fn ctx() -> ToolCtx {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let web = std::sync::Arc::new(
-            crate::tools::web::WebSearch::new(crate::config::WebSearchConfig::Ddg).unwrap(),
-        );
-        ToolCtx {
-            turn: 1,
-            round: 0,
-            web,
-            events: tx,
-        }
+        ToolCtx::test(tx)
     }
 
     fn tempdir(label: &str) -> PathBuf {

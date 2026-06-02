@@ -78,10 +78,11 @@ async fn spawn_text_turn(
         },
     );
 
-    // Assemble the conversation context natively — persona + running history +
-    // this user turn (recorded in history here). No Odysseus session involved.
-    let messages = state.chat_context(&text);
+    // Snapshot the turn's settings; the memory-aware loop assembles the context
+    // itself (recall + working window) from `state.memory`. No Odysseus involved.
     let caps = state.capabilities();
+    let incognito = state.incognito();
+    let persona = state.persona();
 
     let app_task = app.clone();
     let st = state.clone();
@@ -89,18 +90,22 @@ async fn spawn_text_turn(
     let done_task = done.clone();
     let handle = tauri::async_runtime::spawn(async move {
         let mut sink = |ev: MyoEvent| emit(&app_task, ev);
+        // The loop records the user turn and the reply into working memory itself.
         match myo_core::run_turn_native(
-            &st.llm,
+            st.llm.clone(),
             &st.tts,
             st.web.clone(),
+            st.memory.clone(),
             caps,
-            messages,
+            incognito,
+            persona,
+            text,
             turn,
             &mut sink,
         )
         .await
         {
-            Ok(reply) => st.record_reply(reply),
+            Ok(_reply) => {}
             Err(e) => {
                 // Surface the failure and unblock the turn so the UI doesn't hang.
                 emit(
@@ -239,26 +244,31 @@ pub async fn myo_capabilities_set(
 
 // ─── Memory ─────────────────────────────────────────────────────────────────
 
-/// What Myo remembers (optionally filtered by a query).
+/// What Myo remembers (optionally filtered by a text query) — the native
+/// long-term store, in the `{ memory: [...] }` shape the Memory panel renders.
 #[tauri::command]
-pub async fn myo_memory_list(query: Option<String>, state: Shared<'_>) -> Result<Value, String> {
-    let state = state.inner().clone();
-    state
-        .brain
-        .list_memories(query.as_deref())
-        .await
-        .map_err(|e| e.to_string())
+pub fn myo_memory_list(query: Option<String>, state: Shared<'_>) -> Result<Value, String> {
+    let records = state.memory.list(query.as_deref());
+    let memory: Vec<Value> = records
+        .iter()
+        .map(|m| {
+            json!({
+                "id": m.id.to_string(),
+                "text": m.text,
+                "category": m.category,
+                "created_at": m.created_at,
+            })
+        })
+        .collect();
+    Ok(json!({ "memory": memory }))
 }
 
-/// Forget one memory by id.
+/// Forget one durable memory by id.
 #[tauri::command]
-pub async fn myo_memory_forget(id: String, state: Shared<'_>) -> Result<(), String> {
-    let state = state.inner().clone();
-    state
-        .brain
-        .forget_memory(&id)
-        .await
-        .map_err(|e| e.to_string())
+pub fn myo_memory_forget(id: String, state: Shared<'_>) -> Result<(), String> {
+    let id: i64 = id.parse().map_err(|_| format!("invalid memory id: {id}"))?;
+    state.memory.forget(id).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Embed text into vectors via the local model engine (`/v1/embeddings`

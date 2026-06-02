@@ -266,18 +266,7 @@ mod tests {
 
     fn ctx() -> (ToolCtx, mpsc::UnboundedReceiver<MyoEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let web = std::sync::Arc::new(
-            crate::tools::web::WebSearch::new(crate::config::WebSearchConfig::Ddg).unwrap(),
-        );
-        (
-            ToolCtx {
-                turn: 1,
-                round: 0,
-                web,
-                events: tx,
-            },
-            rx,
-        )
+        (ToolCtx::test(tx), rx)
     }
 
     #[cfg(unix)]

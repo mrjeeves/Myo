@@ -41,8 +41,8 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
 |---|---|---|
 | Agent turn / chat streaming | `crates/myo-core/src/llm.rs` (`LlmClient`) | ✅ **done (Slice 1)** |
 | Persona / system prompt | `llm::MYO_PERSONA` | ✅ done |
-| Short-term context (session) | `MyoState::history` (+ `chat_context`) | ✅ done |
-| Long-term memory + recall (SQLite + embeddings; ChromaDB degrades) | `memory` module (SQLite + `/v1/embeddings`) | ⏳ Slice 2 |
+| Short-term context (session) | working memory (`memory::WorkingMemory`) | ✅ **done (Slice 2)** |
+| Long-term memory + recall (SQLite + embeddings) | `memory` module (`LongTermMemory`: SQLite + `/v1/embeddings`) | ✅ **done (Slice 2)** |
 | Tool loop (web/files/code) + capability gating | `tools` module + the 4 toggles | ✅ **done (Slice 4)** — reach-out + deep research still ⏳ |
 | TTS provider | engine TTS via `/v1/audio/speech` → `AudioReady`, WebSpeech fallback | ✅ **done (Slice 3)** |
 | Scheduling / proactive ("reach out") | later | ⏳ |
@@ -54,9 +54,16 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
    reply (WebSpeech fallback for now). `MyoState` keeps the running history
    (persona prepended per turn). The Tauri turn path (`spawn_text_turn`) uses it
    — **a conversation now needs only MyOwnLLM, no Odysseus.**
-2. **Memory.** A local store (SQLite under `~/.myo`) of durable memories + recall
-   via MyOwnLLM `/v1/embeddings`; inject the top hits into `chat_context`.
-   Incognito pauses writes. (Reference: Odysseus `services/` memory + RAG.)
+2. **Memory — DONE.** A layered system in `crates/myo-core/src/memory/`: **Layer 1
+   — working memory** (`WorkingMemory`, the recent conversation, volatile and
+   bounded) and **Layer 2 — long-term memory** (`LongTermMemory`, durable
+   facts/preferences in SQLite under `~/.myo/memory.db`, recalled by cosine over
+   the local `/v1/embeddings`). Each turn (`run_turn_native`) embeds the user's
+   message, recalls the top hits (emitting `memories_used`), and assembles
+   persona + recalled memories + the working window + the turn. Myo writes
+   durably through the `remember` tool (and can `recall` on purpose); **incognito
+   pauses writes**; the Memory panel (`myo_memory_list`/`myo_memory_forget`) lists
+   and forgets. Automatic salience-based capture is a future extension.
 3. **Native TTS — DONE.** `TtsClient` POSTs reply text to MyOwnLLM's
    `/v1/audio/speech` (the hardware-tiered voice — Kokoro/Piper, picked
    engine-side); `run_turn_native` emits `AudioReady{b64,mime}` (the UI plays
@@ -87,17 +94,20 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
   talks to it over loopback HTTP/WS on the private port.
 - **The UI contract is unchanged** — the native brain emits the same `myo://`
   events the Odysseus client did, so surfaces didn't move.
-- **History is in-process for now** (Slice 1); it becomes durable + embedded in
-  Slice 2 (memory).
-- **`BrainClient`/Odysseus startup is not yet removed** — the conversation no
-  longer uses it; capabilities/memory panels still call it (and degrade) until
-  Slices 2/4 port them. Removing the Odysseus supervisor + client is a cleanup
-  once those land.
+- **Memory is layered** (Slice 2): working memory (volatile, recent) +
+  long-term memory (durable SQLite + embedded recall). The conversation history
+  is no longer an ad-hoc `Vec` on `MyoState` — it's `memory::WorkingMemory`, and
+  the turn assembles context from both layers.
+- **`BrainClient`/Odysseus startup is not yet removed** — the conversation,
+  tools, and memory panels are all native now; the lingering `BrainClient`
+  (engine status, capability `disabled_tools`) is the last thing to retire.
+  Removing the Odysseus supervisor + client is a remaining cleanup.
 
 ## File map (new/changed this slice)
 | Area | File |
 |---|---|
 | Native brain (chat streaming + persona) | `crates/myo-core/src/llm.rs` |
 | Native turn (stream → voice) | `crates/myo-core/src/converse.rs` (`run_turn_native`) |
-| History + context assembly | `src-tauri/src/state.rs` (`chat_context`/`record_reply`) |
+| Memory (working + long-term layers) | `crates/myo-core/src/memory/` |
+| Turn context assembly + recall | `crates/myo-core/src/converse.rs` (`run_turn_native`) |
 | Turn command (native path) | `src-tauri/src/core_api.rs` (`spawn_text_turn`) |

@@ -125,16 +125,25 @@ fn run_gui() {
         .expect("failed to build the TTS client");
     // The native brain: streams chat straight from MyOwnLLM (the same private
     // engine the ears use), so a conversation needs no Odysseus brain.
-    let llm = myo_core::LlmClient::new(myo_core::supervisor::myownllm_base_url())
-        .expect("failed to build the LLM client");
+    // Shared (`Arc`) so the memory tools can embed through it from a tool task.
+    let llm = std::sync::Arc::new(
+        myo_core::LlmClient::new(myo_core::supervisor::myownllm_base_url())
+            .expect("failed to build the LLM client"),
+    );
     // The web-search client the native `web_search` tool uses — built from the
     // persisted backend choice (keyless DuckDuckGo by default).
     let web = std::sync::Arc::new(
         myo_core::WebSearch::new(settings.web_search.clone())
             .expect("failed to build the web-search client"),
     );
+    // Myo's memory, rooted at `~/.myo`: the working (recent conversation) and
+    // durable long-term (SQLite + embeddings) layers.
+    let memory = std::sync::Arc::new(
+        myo_core::Memory::open(&myo_core::paths::myo_dir().expect("locate ~/.myo"))
+            .expect("failed to open Myo's memory"),
+    );
     let app_state = std::sync::Arc::new(state::MyoState::new(
-        token, brain, asr, tts, llm, web, settings,
+        token, brain, asr, tts, llm, web, memory, settings,
     ));
     // A clone for the exit hook below (the setup closure moves the other one).
     let exit_state = app_state.clone();
