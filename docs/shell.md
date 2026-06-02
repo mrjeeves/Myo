@@ -7,6 +7,11 @@ to run it against the real engines, and where the seams are.
 > **Picking up the voice work?** Start at **[`voice-handoff.md`](voice-handoff.md)** —
 > current state, open PRs, and the exact next steps (real-time streaming
 > dictation + full-duplex).
+>
+> **Direction shift (2026-06): Myo is now the agent.** The brain is being built
+> *natively in Rust* (talking straight to MyOwnLLM) rather than run as an
+> Odysseus sidecar — see **[`native-agent.md`](native-agent.md)**. References to
+> the Odysseus brain / `:17000` / sessions below are being retired.
 
 Myo is **the AI, not an app with an AI inside it**: a thin voice-first shell
 that composes three local engines as swappable senses behind one internal API

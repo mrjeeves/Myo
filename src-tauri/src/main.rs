@@ -111,7 +111,11 @@ fn run_gui() {
     // user's separately-run / stale MyOwnLLM.
     let asr = myo_core::AsrClient::new(myo_core::supervisor::myownllm_base_url())
         .expect("failed to build the ASR client");
-    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, settings));
+    // The native brain: streams chat straight from MyOwnLLM (the same private
+    // engine the ears use), so a conversation needs no Odysseus brain.
+    let llm = myo_core::LlmClient::new(myo_core::supervisor::myownllm_base_url())
+        .expect("failed to build the LLM client");
+    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, llm, settings));
 
     tauri::Builder::default()
         .manage(app_state.clone())

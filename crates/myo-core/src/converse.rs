@@ -17,6 +17,7 @@ use anyhow::Result;
 use crate::brain::BrainClient;
 use crate::capabilities::Capabilities;
 use crate::event::{MyoEvent, TurnId};
+use crate::llm::{ChatMessage, LlmClient};
 
 /// Hands out a fresh [`TurnId`] per detected utterance / `say` / `feed_wav`.
 #[derive(Debug)]
@@ -88,6 +89,45 @@ pub async fn run_turn(
         }),
     }
     Ok(())
+}
+
+/// Run one full converse turn **natively** — Myo's own brain.
+///
+/// Streams the reply straight from MyOwnLLM ([`LlmClient::chat_stream`] emits the
+/// deltas + closes the turn), accumulates the spoken text, and voices it. There
+/// is no Odysseus in this path: `messages` is the whole context (persona +
+/// history + this user turn) the caller assembled. Returns the spoken text so
+/// the caller can append it to the conversation history.
+///
+/// TTS is the WebSpeech fallback for now ([`MyoEvent::AudioSpeak`]); native
+/// synthesis ([`MyoEvent::AudioReady`]) is a later slice (see
+/// `docs/native-agent.md`).
+pub async fn run_turn_native(
+    llm: &LlmClient,
+    messages: &[ChatMessage],
+    turn: TurnId,
+    emit: &mut (dyn FnMut(MyoEvent) + Send),
+) -> Result<String> {
+    let mut spoken = String::new();
+    {
+        // Tee the stream: forward every event, keep the spoken text for TTS + history.
+        let mut capture = |ev: MyoEvent| {
+            if let MyoEvent::AssistantDelta { text, .. } = &ev {
+                spoken.push_str(text);
+            }
+            emit(ev);
+        };
+        llm.chat_stream(messages, turn, &mut capture).await?;
+    }
+
+    let spoken = spoken.trim().to_string();
+    if !spoken.is_empty() {
+        emit(MyoEvent::AudioSpeak {
+            turn,
+            text: spoken.clone(),
+        });
+    }
+    Ok(spoken)
 }
 
 #[cfg(test)]
