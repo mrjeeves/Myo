@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use myo_core::{
-    AsrClient, BrainClient, ChatMessage, LlmClient, ShellSettings, TtsClient, TurnAllocator,
-    TurnId, MYO_PERSONA,
+    AsrClient, BrainClient, Capabilities, ChatMessage, LlmClient, ShellSettings, TtsClient,
+    TurnAllocator, TurnId, WebSearch, MYO_PERSONA,
 };
 
 /// A spawned engine sidecar that is killed when this handle drops — so closing
@@ -61,6 +61,9 @@ pub struct MyoState {
     /// OpenAI-compatible endpoint, so a conversation needs no Odysseus (see
     /// `docs/native-agent.md`).
     pub llm: LlmClient,
+    /// The shared web-search client the native `web_search` tool uses (keyless
+    /// DuckDuckGo by default; configurable to a SearXNG instance).
+    pub web: Arc<WebSearch>,
     /// The running conversation (user/assistant turns) Myo keeps itself — the
     /// seed of native memory. The persona is prepended per turn, not stored here.
     history: Mutex<Vec<ChatMessage>>,
@@ -85,12 +88,14 @@ pub struct TurnTask {
 }
 
 impl MyoState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: String,
         brain: BrainClient,
         asr: AsrClient,
         tts: TtsClient,
         llm: LlmClient,
+        web: Arc<WebSearch>,
         settings: ShellSettings,
     ) -> Self {
         Self {
@@ -99,12 +104,18 @@ impl MyoState {
             asr,
             tts,
             llm,
+            web,
             history: Mutex::new(Vec::new()),
             turns: TurnAllocator::new(),
             settings: Mutex::new(settings),
             children: Mutex::new(Vec::new()),
             tasks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The current capability toggles (which tools the agent loop may offer).
+    pub fn capabilities(&self) -> Capabilities {
+        self.settings.lock().unwrap().capabilities
     }
 
     /// The system prompt every turn opens with: the user's custom persona when

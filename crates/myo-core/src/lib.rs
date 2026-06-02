@@ -36,13 +36,15 @@ pub mod event;
 pub mod llm;
 pub mod paths;
 pub mod supervisor;
+pub mod tools;
 pub mod tts;
 
 pub use asr::AsrClient;
 pub use brain::{BrainClient, BrainConfig};
 pub use capabilities::Capabilities;
-pub use config::ShellSettings;
+pub use config::{ShellSettings, WebSearchConfig};
 pub use converse::{run_turn, run_turn_native, TurnAllocator};
 pub use event::{channel, Emit, MyoEvent, TurnId};
-pub use llm::{ChatMessage, LlmClient, EMBED_MODEL, MYO_PERSONA};
+pub use llm::{ChatMessage, LlmClient, ToolCall, TurnOutcome, EMBED_MODEL, MYO_PERSONA};
+pub use tools::WebSearch;
 pub use tts::{TtsAudio, TtsClient};

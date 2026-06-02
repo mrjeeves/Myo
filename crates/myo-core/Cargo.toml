@@ -10,7 +10,6 @@ repository.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 dirs.workspace = true
 # Encode the engine's raw `/v1/audio/speech` WAV bytes into the base64
 # `AudioReady` payload the WebView plays (the voice client, tts.rs).
@@ -18,6 +17,10 @@ base64.workspace = true
 # multipart: Odysseus's /api/chat_stream is form-data, not JSON.
 # stream: we read the SSE body chunk-by-chunk as it arrives.
 reqwest = { workspace = true, features = ["multipart", "stream"] }
+# The native tool loop runs tool calls concurrently (a JoinSet of tasks) and
+# streams their progress back over an mpsc channel — both from tokio's `sync`/`rt`.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util"] }
+async-trait.workspace = true
 
 [dev-dependencies]
 # A throwaway loopback server for client integration tests (no external mocks).

@@ -25,7 +25,10 @@ dirs = "6"
 # default-features off + rustls keeps the binary free of a system OpenSSL
 # dependency, which matters for the 5-target release matrix.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# Object-safe async methods on the `Tool` trait, so the native tool registry can
+# hold `Arc<dyn Tool>` and dispatch a heterogeneous tool kit.
+async-trait = "0.1"
 
 [profile.release]
 strip = true
