@@ -18,6 +18,7 @@ use crate::brain::BrainClient;
 use crate::capabilities::Capabilities;
 use crate::event::{MyoEvent, TurnId};
 use crate::llm::{ChatMessage, LlmClient};
+use crate::tts::TtsClient;
 
 /// Hands out a fresh [`TurnId`] per detected utterance / `say` / `feed_wav`.
 #[derive(Debug)]
@@ -99,11 +100,16 @@ pub async fn run_turn(
 /// history + this user turn) the caller assembled. Returns the spoken text so
 /// the caller can append it to the conversation history.
 ///
-/// TTS is the WebSpeech fallback for now ([`MyoEvent::AudioSpeak`]); native
-/// synthesis ([`MyoEvent::AudioReady`]) is a later slice (see
-/// `docs/native-agent.md`).
+/// Voicing tries the engine's own synthesis first ([`TtsClient::synthesize`] →
+/// [`MyoEvent::AudioReady`], a hardware-tiered voice the UI plays directly) and
+/// falls back to WebSpeech ([`MyoEvent::AudioSpeak`]) whenever the engine can't
+/// — too old for the route, warming, or synthesis not yet available — the same
+/// graceful-degrade shape as the streaming→clip ASR fallback. This brings the
+/// native path to parity with [`run_turn`] (the Odysseus path), using the
+/// engine Myo owns instead of the dead `brain.tts()`.
 pub async fn run_turn_native(
     llm: &LlmClient,
+    tts: &TtsClient,
     messages: &[ChatMessage],
     turn: TurnId,
     emit: &mut (dyn FnMut(MyoEvent) + Send),
@@ -122,10 +128,17 @@ pub async fn run_turn_native(
 
     let spoken = spoken.trim().to_string();
     if !spoken.is_empty() {
-        emit(MyoEvent::AudioSpeak {
-            turn,
-            text: spoken.clone(),
-        });
+        match tts.synthesize(&spoken, None).await {
+            Ok(audio) => emit(MyoEvent::AudioReady {
+                turn,
+                b64: audio.b64,
+                mime: audio.mime,
+            }),
+            Err(_) => emit(MyoEvent::AudioSpeak {
+                turn,
+                text: spoken.clone(),
+            }),
+        }
     }
     Ok(spoken)
 }

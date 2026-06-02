@@ -120,11 +120,16 @@ fn run_gui() {
     // user's separately-run / stale MyOwnLLM.
     let asr = myo_core::AsrClient::new(myo_core::supervisor::myownllm_base_url())
         .expect("failed to build the ASR client");
+    // The voice: the same private engine's `/v1/audio/speech` — a
+    // hardware-tiered synthesized voice, with WebSpeech as the fallback.
+    let tts = myo_core::TtsClient::new(myo_core::supervisor::myownllm_base_url())
+        .expect("failed to build the TTS client");
     // The native brain: streams chat straight from MyOwnLLM (the same private
     // engine the ears use), so a conversation needs no Odysseus brain.
     let llm = myo_core::LlmClient::new(myo_core::supervisor::myownllm_base_url())
         .expect("failed to build the LLM client");
-    let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, llm, settings));
+    let app_state =
+        std::sync::Arc::new(state::MyoState::new(token, brain, asr, tts, llm, settings));
     // A clone for the exit hook below (the setup closure moves the other one).
     let exit_state = app_state.clone();
 

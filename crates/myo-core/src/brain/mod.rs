@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use crate::capabilities::Capabilities;
 use crate::event::{MyoEvent, TurnId};
+use crate::tts::TtsAudio;
 use sse::{normalize, SseDecoder, SseItem};
 
 /// Where the brain lives and how to authenticate to it.
@@ -43,13 +44,6 @@ impl BrainConfig {
             owner: owner.into(),
         }
     }
-}
-
-/// Synthesized speech for one turn (base64 + its MIME type).
-#[derive(Debug, Clone, PartialEq)]
-pub struct TtsAudio {
-    pub b64: String,
-    pub mime: String,
 }
 
 /// A loopback client for one Odysseus instance.
