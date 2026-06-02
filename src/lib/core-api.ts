@@ -28,6 +28,15 @@ export interface EnginesStatus {
   myownllm: boolean;
 }
 
+export interface PersonaInfo {
+  /** The system prompt currently in force. */
+  effective: string;
+  /** The built-in default (for "reset to default"). */
+  default: string;
+  /** Whether a custom override is set. */
+  custom: boolean;
+}
+
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -55,6 +64,9 @@ export const api = {
   memoryForget: (id: string) => invoke<void>("myo_memory_forget", { id }),
 
   settingsGet: () => invoke<ShellSettings>("myo_settings_get"),
+  personaGet: () => invoke<PersonaInfo>("myo_persona_get"),
+  /** Set the custom persona; "" clears it back to the built-in default. */
+  personaSet: (persona: string) => invoke<PersonaInfo>("myo_persona_set", { persona }),
   ttsSpeak: (text: string) => invoke<TurnId>("myo_tts_speak", { text }),
 };
 

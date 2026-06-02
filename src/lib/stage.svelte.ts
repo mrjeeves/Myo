@@ -120,6 +120,9 @@ class MyoStore {
   // Memory surface
   memories = $state<MemoryItem[]>([]);
 
+  // Brain surface: Myo's persona (system prompt). Null until first loaded.
+  persona = $state<import("./core-api").PersonaInfo | null>(null);
+
   private voice = new Voice();
   // Two capture modes, mutually exclusive: `streamer` is the preferred
   // real-time WebSocket dictation; `listener` is the clip/energy-VAD fallback.
@@ -443,6 +446,29 @@ class MyoStore {
   async forgetMemory(id: string) {
     await api.memoryForget(id).catch(() => {});
     this.memories = this.memories.filter((m) => m.id !== id);
+  }
+
+  /** Load Myo's persona (the system prompt) for the Brain surface. */
+  async loadPersona() {
+    try {
+      this.persona = await api.personaGet();
+    } catch {
+      this.persona = null;
+    }
+  }
+
+  /** Save a custom persona; an empty string resets to the built-in default. */
+  async savePersona(text: string) {
+    try {
+      this.persona = await api.personaSet(text);
+    } catch {
+      // Backend unreachable — keep the last-known persona on screen.
+    }
+  }
+
+  /** Clear the override → back to the built-in default persona. */
+  async resetPersona() {
+    await this.savePersona("");
   }
 
   recallArtifact(index: number) {

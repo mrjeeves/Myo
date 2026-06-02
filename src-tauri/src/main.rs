@@ -155,6 +155,8 @@ fn run_gui() {
             core_api::myo_memory_list,
             core_api::myo_memory_forget,
             core_api::myo_settings_get,
+            core_api::myo_persona_get,
+            core_api::myo_persona_set,
             core_api::myo_tts_speak,
         ])
         .setup(move |app| {

@@ -258,6 +258,38 @@ pub fn myo_settings_get(state: Shared<'_>) -> ShellSettings {
     state.settings.lock().unwrap().clone()
 }
 
+/// Myo's persona — the system prompt that opens every conversation: the
+/// effective text in force, the built-in default (for "reset to default"), and
+/// whether a custom override is set.
+#[tauri::command]
+pub fn myo_persona_get(state: Shared<'_>) -> Value {
+    json!({
+        "effective": state.persona(),
+        "default": myo_core::MYO_PERSONA,
+        "custom": state.persona_is_custom(),
+    })
+}
+
+/// Set (or clear) Myo's custom persona. An empty / whitespace-only value clears
+/// the override and restores the built-in default. Persisted to `~/.myo`.
+#[tauri::command]
+pub fn myo_persona_set(persona: String, state: Shared<'_>) -> Result<Value, String> {
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.persona = if persona.trim().is_empty() {
+            None
+        } else {
+            Some(persona)
+        };
+        s.save().map_err(|e| e.to_string())?;
+    }
+    Ok(json!({
+        "effective": state.persona(),
+        "default": myo_core::MYO_PERSONA,
+        "custom": state.persona_is_custom(),
+    }))
+}
+
 /// Synthesize (or fall back to WebSpeech for) a one-off line of speech.
 #[tauri::command]
 pub async fn myo_tts_speak(

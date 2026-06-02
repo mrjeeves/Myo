@@ -7,6 +7,7 @@
   import DocumentArtifact from "./surfaces/DocumentArtifact.svelte";
   import Composer from "./surfaces/Composer.svelte";
   import Control from "./surfaces/Control.svelte";
+  import Brain from "./surfaces/Brain.svelte";
   import Memory from "./surfaces/Memory.svelte";
   import UpdatesSection from "./surfaces/UpdatesSection.svelte";
 
@@ -18,6 +19,7 @@
 
   const panelTitles: Record<string, string> = {
     control: "What Myo can do",
+    brain: "Brain",
     memory: "Memory",
     settings: "Updates",
   };
@@ -33,6 +35,7 @@
       <span class="dot" class:on={myo.engines.odysseus} title="Brain — Odysseus">brain</span>
       <span class="dot" class:on={myo.engines.myownllm} title="Model engine — MyOwnLLM">model</span>
       <button onclick={() => myo.showPanel("control")} title="Controls" aria-label="Controls">⚙</button>
+      <button onclick={() => myo.showPanel("brain")} title="Myo's persona" aria-label="Persona">🎭</button>
       <button onclick={() => myo.showPanel("memory")} title="Memory" aria-label="Memory">🧠</button>
       <button onclick={() => myo.showPanel("settings")} title="Updates" aria-label="Updates">↻</button>
     </div>
@@ -71,6 +74,8 @@
       <div class="panel-body">
         {#if myo.openPanel === "control"}
           <Control />
+        {:else if myo.openPanel === "brain"}
+          <Brain />
         {:else if myo.openPanel === "memory"}
           <Memory />
         {:else if myo.openPanel === "settings"}
