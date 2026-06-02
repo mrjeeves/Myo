@@ -1,7 +1,8 @@
 //! `~/.myo/config.json` → the `shell` section: the Myo shell's persisted state.
 //!
-//! Just two things survive restarts: the four capability toggles and the
-//! incognito switch. Everything else (sessions, turns, live engine handles) is
+//! A few things survive restarts: the four capability toggles, the incognito
+//! switch, and an optional custom persona. Everything else (sessions, turns,
+//! live engine handles) is
 //! ephemeral. We share the updater's config document — loading the whole thing,
 //! touching only `shell`, and writing it back — so `auto_update` is preserved.
 
@@ -25,6 +26,10 @@ pub struct ShellSettings {
     /// When on, memory is paused: turns run with Odysseus incognito so nothing
     /// is persisted. A privacy switch the user (or the agent) can flip.
     pub incognito: bool,
+    /// A custom system prompt overriding the built-in `MYO_PERSONA`. `None` (or
+    /// whitespace-only) means "use the default" — editable from the Brain
+    /// surface, with one-tap reset-to-default.
+    pub persona: Option<String>,
 }
 
 impl ShellSettings {
@@ -134,6 +139,37 @@ mod tests {
         std::fs::write(&path, r#"{ "shell": "not-an-object" }"#).unwrap();
         let s = ShellSettings::load_at(&path).unwrap();
         assert_eq!(s, ShellSettings::default());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persona_defaults_to_none_and_round_trips() {
+        // Default = no override (use the built-in MYO_PERSONA).
+        assert_eq!(ShellSettings::default().persona, None);
+
+        let path = temp_path("persona");
+        let s = ShellSettings {
+            persona: Some("Be terse and a little wry.".into()),
+            ..ShellSettings::default()
+        };
+        s.save_at(&path).unwrap();
+        assert_eq!(
+            ShellSettings::load_at(&path).unwrap().persona.as_deref(),
+            Some("Be terse and a little wry.")
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn config_without_persona_key_loads_as_none() {
+        // A config written before the persona field existed must still load.
+        let path = temp_path("legacy");
+        std::fs::write(
+            &path,
+            r#"{ "shell": { "capabilities": { "web": true, "files": false, "code": false, "reach_out": false }, "incognito": false } }"#,
+        )
+        .unwrap();
+        assert_eq!(ShellSettings::load_at(&path).unwrap().persona, None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

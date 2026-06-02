@@ -107,12 +107,34 @@ impl MyoState {
         }
     }
 
+    /// The system prompt every turn opens with: the user's custom persona when
+    /// set (and non-empty), otherwise the built-in [`MYO_PERSONA`].
+    pub fn persona(&self) -> String {
+        let s = self.settings.lock().unwrap();
+        match s.persona.as_deref().map(str::trim) {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => MYO_PERSONA.to_string(),
+        }
+    }
+
+    /// Whether a non-empty custom persona override is in force (vs. the default).
+    pub fn persona_is_custom(&self) -> bool {
+        let s = self.settings.lock().unwrap();
+        s.persona
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|p| !p.is_empty())
+    }
+
     /// Assemble the chat context for a new user turn — Myo's persona, the
     /// running history, and this message — recording the user message in history
     /// as we go (so a barge-in mid-reply still leaves the turn on the record).
     /// History is capped so the context stays bounded.
     pub fn chat_context(&self, user_text: &str) -> Vec<ChatMessage> {
         const MAX_HISTORY: usize = 40;
+        // Resolve the system prompt first (locks `settings`, then drops it) so we
+        // never hold the `history` and `settings` locks simultaneously.
+        let persona = self.persona();
         let mut hist = self.history.lock().unwrap();
         hist.push(ChatMessage::user(user_text));
         if hist.len() > MAX_HISTORY {
@@ -120,7 +142,7 @@ impl MyoState {
             hist.drain(0..cut);
         }
         let mut messages = Vec::with_capacity(hist.len() + 1);
-        messages.push(ChatMessage::system(MYO_PERSONA));
+        messages.push(ChatMessage::system(persona));
         messages.extend(hist.iter().cloned());
         messages
     }
