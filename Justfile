@@ -83,3 +83,21 @@ check:
     @pnpm check
     @cargo clippy --workspace --all-targets -- -D warnings
     @cargo test --workspace
+
+# Cut a release: bump the version everywhere, commit, push, trigger the workflow.
+# Usage: just release 0.1.0
+#
+# Unix-only: bump-version.sh is bash and releases have always been cut from a
+# Linux/macOS box. Run it from a clean `main` — `gh workflow run` dispatches
+# release.yml against the default branch, and the workflow tags that commit
+# (bare semver, e.g. `0.1.0`) before building the per-platform `myo-*` binaries.
+[unix]
+[doc("Cut a release: bump the version everywhere, commit, push, trigger the release workflow.")]
+release version:
+    @./scripts/bump-version.sh {{version}}
+    @if ! git diff --quiet Cargo.toml Cargo.lock package.json; then \
+        git add Cargo.toml Cargo.lock package.json; \
+        git commit -m "chore(release): {{version}}"; \
+    fi
+    @git push
+    @gh workflow run release.yml -f tag={{version}}
