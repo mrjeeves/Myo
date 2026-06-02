@@ -123,6 +123,7 @@ fn run_gui() {
             update_leftovers_clear,
             core_api::myo_engines_status,
             core_api::myo_engines_ensure_ready,
+            core_api::myo_asr_stream_url,
             core_api::myo_converse_say,
             core_api::myo_converse_cancel,
             core_api::myo_converse_feed_wav,

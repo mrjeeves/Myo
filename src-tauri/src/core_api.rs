@@ -43,6 +43,16 @@ pub async fn myo_engines_ensure_ready(app: AppHandle, state: Shared<'_>) -> Resu
     Ok(())
 }
 
+/// The engine's live streaming-transcription WebSocket URL
+/// (`ws://127.0.0.1:11473/v1/audio/stream`). The WebView connects here for
+/// real-time dictation: it streams 16 kHz mono i16-LE PCM up and reads interim
+/// + final caption frames down. Myo owns this engine on a private loopback port
+/// and runs it tokenless, so the socket needs no auth.
+#[tauri::command]
+pub fn myo_asr_stream_url() -> String {
+    myo_core::supervisor::myownllm_stream_url()
+}
+
 // ─── Converse ───────────────────────────────────────────────────────────────
 
 /// Run one converse turn for already-known text: echo it as the final

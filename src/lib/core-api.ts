@@ -33,6 +33,8 @@ export interface EnginesStatus {
 export const api = {
   enginesStatus: () => invoke<EnginesStatus>("myo_engines_status"),
   enginesEnsureReady: () => invoke<void>("myo_engines_ensure_ready"),
+  /** The engine's live streaming-transcription WebSocket URL (`ws://…/v1/audio/stream`). */
+  asrStreamUrl: () => invoke<string>("myo_asr_stream_url"),
 
   /** Text bypass: returns the allocated turn id. */
   say: (text: string) => invoke<TurnId>("myo_converse_say", { text }),

@@ -34,8 +34,9 @@ Tauri commands the frontend invokes ([`src-tauri/src/core_api.rs`](../src-tauri/
 | Command | Does |
 |---|---|
 | `myo_engines_status` / `myo_engines_ensure_ready` | health of the brain + model engine; launch and auto-wire them |
-| `myo_converse_say{text}` → `turnId` | the **text path**: brain answer (streamed) → voice |
-| `myo_converse_feed_audio{audio,mime}` → `turnId?` | the **voice path**: base64 WAV → MyOwnLLM transcription → turn (`null` = silence/empty) |
+| `myo_asr_stream_url` → `ws://…/v1/audio/stream` | the engine's **live dictation** WebSocket (the streaming voice path connects here) |
+| `myo_converse_say{text}` → `turnId` | the **text path**: brain answer (streamed) → voice. Also how the **streaming** voice path runs a finalized utterance. |
+| `myo_converse_feed_audio{audio,mime}` → `turnId?` | the **clip voice path** (fallback): base64 WAV → MyOwnLLM transcription → turn (`null` = silence/empty) |
 | `myo_converse_cancel{turn}` | barge-in / stop an in-flight turn |
 | `myo_converse_feed_wav{path}` → `turnId?` | WAV-**file** bypass (CI / "transcribe this file") → turn |
 | `myo_capabilities_get` / `myo_capabilities_set{caps}` | the four Web/Files/Code/Reach-out toggles |
@@ -113,20 +114,24 @@ to the text composer.
 These are real, scoped follow-ups — the shell is built *around* each seam so the
 engine drops in without reshaping the shell:
 
-- **👂 Voice input — wired (open-mic).** Myo is always listening: the WebView
-  captures the mic (`getUserMedia` with echo-cancellation), a lightweight energy
-  VAD segments utterances ([`src/lib/audio-io.ts`](../src/lib/audio-io.ts)), and
-  each finished utterance is base64'd to `myo_converse_feed_audio`, which POSTs it
-  to **Myo's own engine** — `/v1/audio/transcriptions` on the private `:11473`
-  (`AsrClient`). Because Myo owns that engine, no stale/foreign instance can
-  hijack ASR. The transcript drives the same brain→voice turn as text
-  (`myo://transcript` → `assistant` → `audio`); the engine deletes the upload
-  immediately and the mic button is the one-tap hard mute. **Refinements still
-  open:** **warm** transcription (the engine rebuilds the ASR backend per
-  utterance — fine beside a multi-second agent turn, but caching the loaded
-  backend in `serve` would make turns snappier), full-duplex **barge-in** (today
-  half-duplex — the mic gates while Myo thinks/speaks so she never transcribes
-  herself), and **Silero VAD** (+ AudioWorklet) in place of the energy gate.
+- **👂 Voice input — wired (open-mic, real-time + full-duplex).** Myo is always
+  listening. The **primary** path is **streaming dictation**: the WebView
+  (`StreamingListener` in [`src/lib/audio-io.ts`](../src/lib/audio-io.ts)) opens a
+  WebSocket to **Myo's own engine** (`myo_asr_stream_url` → `ws://…:11473/v1/audio/stream`),
+  resamples the mic to 16 kHz and streams PCM continuously, rendering **interim**
+  captions live and running the brain turn on each **final** (`api.say` — the
+  proven text path). It's **full-duplex**: the mic stays open through Myo's reply,
+  so a final mid-reply barges in. The **fallback** (when the socket can't be
+  reached) is the clip path: an energy VAD segments utterances and base64's each
+  to `myo_converse_feed_audio`, which POSTs to `/v1/audio/transcriptions`
+  (`AsrClient`). Both run against the engine Myo *owns* on the private `:11473`,
+  so no stale/foreign instance can hijack ASR; audio is transient (the engine
+  keeps nothing) and the mic button is the one-tap hard mute. **Refinements still
+  open:** tuning full-duplex **AEC** (so she never transcribes her own TTS;
+  one-line degrade to gated-during-speech if weak), and an **AudioWorklet** (+
+  browser **Silero VAD** for the clip path) in place of the `ScriptProcessorNode`
+  energy gate. Requires a bundled engine new enough to serve the stream route —
+  guaranteed by the pin (`.myownllm-rev` → `0.2.24`).
 - **✋ Fine-grained approval (tier-b).** Coarse control (the four toggles) ships
   now; per-action approve/tweak/edit needs the upstreamable Odysseus hook plus an
   ApprovalCard surface. Reserved in the event vocabulary.

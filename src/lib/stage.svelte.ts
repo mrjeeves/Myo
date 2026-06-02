@@ -20,7 +20,7 @@ import {
   type TurnId,
   type UiEvent,
 } from "./core-api";
-import { Listener, Voice, blobToBase64 } from "./audio-io";
+import { Listener, StreamingListener, Voice, blobToBase64 } from "./audio-io";
 
 export type Phase = "idle" | "listening" | "thinking" | "speaking";
 
@@ -103,6 +103,11 @@ class MyoStore {
   // Hard-muted: the user tapped the mic off. Myo's default is always-listening,
   // so this is the one-tap privacy switch, not the norm.
   muted = $state(false);
+  // The live "typing" caption from streaming dictation — what Myo is hearing
+  // right now, before the utterance finalizes into a turn. Empty when idle.
+  liveTranscript = $state("");
+  // Transient engine subtitle from the ASR stream ("Loading model…", etc.).
+  asrStatus = $state("");
   turns = $state<Turn[]>([]);
 
   // Document artifacts (the focal "stage" surface) + recall history
@@ -116,6 +121,9 @@ class MyoStore {
   memories = $state<MemoryItem[]>([]);
 
   private voice = new Voice();
+  // Two capture modes, mutually exclusive: `streamer` is the preferred
+  // real-time WebSocket dictation; `listener` is the clip/energy-VAD fallback.
+  private streamer?: StreamingListener;
   private listener?: Listener;
   private activeTurn: TurnId | null = null;
   // The artifact currently being streamed (target for delta/update), tracked
@@ -171,6 +179,7 @@ class MyoStore {
   dispose() {
     this.unlisten?.();
     this.voice.stop();
+    this.streamer?.stop();
     this.listener?.stop();
   }
 
@@ -180,8 +189,9 @@ class MyoStore {
    *  muted), else idle. Also drops the capture gate raised while Myo was busy,
    *  so her ears reopen the instant she stops thinking/speaking. */
   private toIdle() {
-    if (this.listener?.running && !this.muted) {
-      this.listener.setGated(false);
+    if ((this.streamer?.running || this.listener?.running) && !this.muted) {
+      // Streaming stays full-duplex (no gate); the clip listener reopens its ears.
+      this.listener?.setGated(false);
       this.phase = "listening";
     } else {
       this.phase = "idle";
@@ -189,11 +199,50 @@ class MyoStore {
   }
 
   private gateMic(on: boolean) {
+    // Only the clip listener gates — it endpoints client-side, so it must not
+    // hear Myo's own reply. Streaming hands endpointing to the engine and runs
+    // full-duplex, so it's deliberately never gated here.
     this.listener?.setGated(on);
   }
 
-  /** Open the mic and start the always-on listen loop (best-effort). */
+  /** Open the mic and start the always-on listen loop (best-effort). Prefers
+   *  real-time streaming dictation; falls back to the clip listener if the
+   *  engine's WebSocket can't be reached. */
   async startListening() {
+    if (this.streamer?.running || this.listener?.running) return;
+    try {
+      await this.startStreaming();
+      return;
+    } catch (e) {
+      console.warn("[myo] streaming dictation unavailable, falling back to clip capture:", e);
+    }
+    await this.startClipListening();
+  }
+
+  /** Real-time path: stream PCM to the engine and render interim + final
+   *  captions. Resolves once the mic is live (the socket attaches on its own,
+   *  retrying a still-booting engine); throws only on mic permission denial. */
+  private async startStreaming() {
+    const url = await api.asrStreamUrl();
+    const streamer = new StreamingListener({
+      url,
+      onInterim: (text) => this.onInterim(text),
+      onFinal: (text) => void this.onFinal(text),
+      onSpeechStart: () => this.onStreamSpeechStart(),
+      onStatus: (s) => this.onAsrStatus(s),
+      onLevel: (rms) => console.debug("[myo] idle mic level", rms.toFixed(4)),
+      onError: (e) => this.onStreamError(e),
+    });
+    await streamer.start();
+    this.streamer = streamer;
+    this.micReady = true;
+    this.listening = true;
+    this.muted = false;
+    if (this.activeTurn === null) this.toIdle();
+  }
+
+  /** Fallback path: the energy-VAD clip listener (one WAV POST per utterance). */
+  private async startClipListening() {
     if (this.listener?.running) return;
     const listener =
       this.listener ??
@@ -222,20 +271,66 @@ class MyoStore {
     }
   }
 
+  // ── Streaming-dictation handlers ───────────────────────────────────────────
+
+  /** A new utterance is forming. Light up "listening" if idle; the actual
+   *  barge-in happens on the *final* (see onFinal), which is robust against
+   *  echo-cancellation bleed finalizing a stray word of Myo's own reply. */
+  private onStreamSpeechStart() {
+    if (this.activeTurn === null && !this.muted && this.phase === "idle") {
+      this.phase = "listening";
+    }
+  }
+
+  /** Live caption refines as the user speaks — replace it in place. */
+  private onInterim(text: string) {
+    this.liveTranscript = text;
+  }
+
+  /** A finalized utterance: run it as a turn. This is full-duplex barge-in —
+   *  runUserTurn cancels any in-flight turn and hushes playback first, and does
+   *  NOT gate the mic, so Myo keeps listening straight through her own reply. */
+  private async onFinal(text: string) {
+    this.liveTranscript = "";
+    await this.runUserTurn(text, /* gate */ false);
+  }
+
+  /** Engine subtitle off the stream ("Loading model…", "Listening…", errors). */
+  private onAsrStatus(status: string) {
+    this.asrStatus = status;
+  }
+
+  /** The streaming socket gave up (engine unreachable / fatal error). Drop it
+   *  and fall back to the clip listener so Myo keeps her ears either way. */
+  private onStreamError(e: unknown) {
+    console.warn("[myo] streaming dictation lost; switching to clip capture:", e);
+    this.streamer?.stop();
+    this.streamer = undefined;
+    this.liveTranscript = "";
+    this.asrStatus = "";
+    if (!this.muted) void this.startClipListening();
+  }
+
   /** Hard mute: release the mic entirely (privacy switch). */
   stopListening() {
+    this.streamer?.stop();
+    this.streamer = undefined;
     this.listener?.stop();
     this.listener = undefined;
     this.listening = false;
+    this.liveTranscript = "";
   }
 
   /** The composer's mic button: toggle always-on listening on/off. */
   async toggleMic() {
-    if (this.listener?.running) {
-      if (this.listener.suspended) {
+    // Whichever capture mode is live (streaming or clip); both expose the same
+    // running/suspended/resume surface.
+    const active = this.streamer ?? this.listener;
+    if (active?.running) {
+      if (active.suspended) {
         // First user gesture: unlock a context that started suspended (autoplay
         // policy) rather than muting — so the button reliably *enables* the ears.
-        await this.listener.resume();
+        await active.resume();
         if (this.activeTurn === null) this.toIdle();
         return;
       }
@@ -285,12 +380,21 @@ class MyoStore {
   // ── Actions ────────────────────────────────────────────────────────────────
 
   async say(text: string) {
+    // Gate the mic only when NOT streaming: the clip listener would otherwise
+    // transcribe Myo's own reply, while streaming runs full-duplex on purpose.
+    await this.runUserTurn(text, /* gate */ !this.streamer?.running);
+  }
+
+  /** Run one user turn (shared by the text composer and the voice paths): cancel
+   *  any in-flight turn (barge-in), hush playback, fire the brain→TTS round-trip.
+   *  `gate` mutes the clip listener for the turn; streaming passes `false`. */
+  private async runUserTurn(text: string, gate: boolean) {
     const t = text.trim();
     if (!t) return;
     // A new utterance while a turn is live is barge-in: cancel the old one
     // first so its bookkeeping isn't orphaned and two turns don't overlap.
     if (this.activeTurn !== null) await this.cancel();
-    this.gateMic(true);
+    if (gate) this.gateMic(true);
     this.voice.stop();
     this.phase = "thinking";
     try {

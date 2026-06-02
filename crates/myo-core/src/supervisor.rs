@@ -44,6 +44,17 @@ pub fn myownllm_base_url() -> String {
     format!("http://127.0.0.1:{MYOWNLLM_PORT}")
 }
 
+/// `ws://127.0.0.1:11473/v1/audio/stream` — the engine's **live** streaming
+/// transcription WebSocket (the frontend's real-time dictation path). Same
+/// private port as the HTTP engine, `ws://` scheme. The WebView connects here
+/// directly: because Myo owns this engine on a loopback port and runs it
+/// tokenless, the socket needs no auth header (browsers can't set custom
+/// headers on a WS handshake anyway). Requires a `myownllm` new enough to serve
+/// the route — guaranteed by the pinned, bundled engine (see `.myownllm-rev`).
+pub fn myownllm_stream_url() -> String {
+    format!("ws://127.0.0.1:{MYOWNLLM_PORT}/v1/audio/stream")
+}
+
 /// A launch recipe for one engine. Consumed by the binary's process supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineSpec {
@@ -244,6 +255,16 @@ mod tests {
         assert_eq!(spec.args, vec!["serve", "--port", "11473"]);
         assert_eq!(spec.health_url, "http://127.0.0.1:11473/healthz");
         assert!(spec.cwd.is_none());
+    }
+
+    #[test]
+    fn stream_url_is_ws_on_the_private_engine_port() {
+        // The frontend's real-time dictation socket: ws:// (not http), the
+        // owned private port, and the live-stream route the pinned engine adds.
+        assert_eq!(
+            myownllm_stream_url(),
+            "ws://127.0.0.1:11473/v1/audio/stream"
+        );
     }
 
     #[test]

@@ -4,14 +4,20 @@
 // browser's speech engine when no TTS provider is configured. One `Voice`
 // instance backs the whole app so barge-in can stop whatever is playing.
 //
-// Voice IN: Myo is a character who's always listening. `Listener` opens the
-// mic once and keeps it open, watching for utterances with a lightweight
-// energy VAD (speech onset → trailing-silence endpoint). Each finished
-// utterance is handed back as a 16-bit WAV the shell forwards to MyOwnLLM's
-// transcription route. Capture lives in the WebView on purpose: the browser's
-// echo-cancellation then sees the same audio context as the TTS playback, and
-// nothing audible ever leaves the device. The audio is never persisted — it's
-// transcribed and dropped (Myo's privacy default).
+// Voice IN comes in two flavours, both always-on and both WebView-side (so the
+// browser's echo-cancellation sees the same audio graph as the TTS playback,
+// and nothing audible ever leaves the device — audio is transcribed and
+// dropped, Myo's privacy default):
+//
+//   • `StreamingListener` (preferred) — opens a WebSocket to the engine's live
+//     dictation route and streams 16 kHz mono PCM continuously, reading back
+//     *interim* captions as you speak and a *final* per utterance. The engine
+//     keeps the model warm and owns the endpointing (Silero VAD), so this is
+//     real-time and full-duplex (she can keep listening while she replies).
+//   • `Listener` (fallback) — opens the mic and watches for utterances with a
+//     lightweight energy VAD (onset → trailing-silence endpoint), handing each
+//     finished utterance back as a 16-bit WAV the shell POSTs to the one-shot
+//     transcription route. Used when the streaming socket can't be reached.
 
 export type VoiceState = "idle" | "speaking";
 
@@ -342,4 +348,320 @@ export async function blobToBase64(blob: Blob): Promise<string> {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+// ─── Voice input: real-time streaming dictation (WebSocket) ───────────────────
+
+/** The engine's wire sample rate — 16 kHz mono, the ASR backends' training
+ *  rate. Matches MyOwnLLM's `TRANSCRIBE_WS_SAMPLE_RATE`; we resample to it
+ *  before sending so the engine never has to. */
+const STREAM_SAMPLE_RATE = 16000;
+
+/** One ASR caption segment, as it lands on the wire. `partial` is present and
+ *  `true` only while the text is still being refined (the live "typing"
+ *  caption); a *finalized* utterance omits it (serde skips `false`). `seg_id`
+ *  is stable per utterance on the live path, so interim → final replaces in
+ *  place. (Mirrors `EmittedSegment` in MyOwnLLM's `transcribe.rs`.) */
+interface StreamSegment {
+  text?: string;
+  seg_id?: number;
+  partial?: boolean;
+}
+
+/** A `TranscribeFrame` off the wire. `final` (serde-renamed from `is_final`)
+ *  flags the *session* end, not a per-utterance final — that's `partial` on
+ *  each segment. `status` carries engine subtitles ("Loading model…",
+ *  "Listening…"). Error frames arrive as `{ error }` instead. */
+interface StreamFrame {
+  segments?: StreamSegment[];
+  final?: boolean;
+  status?: string;
+  error?: string;
+}
+
+export interface StreamingOptions {
+  /** The engine WS URL, e.g. `ws://127.0.0.1:11473/v1/audio/stream`. */
+  url: string;
+  /** Interim ("typing") caption for the in-progress utterance — replace in place. */
+  onInterim: (text: string, segId: number) => void;
+  /** A finalized utterance — the shell runs this as a turn. */
+  onFinal: (text: string, segId: number) => void;
+  /** First interim of a new utterance (speech onset) — lights up the orb. */
+  onSpeechStart?: () => void;
+  /** Engine status subtitle ("Loading model…", "Listening…", inference errors). */
+  onStatus?: (status: string) => void;
+  /** Throttled RMS level (0..1) — for tuning / a level meter. */
+  onLevel?: (rms: number) => void;
+  /** Streaming gave up (couldn't reach the engine, or a fatal engine error).
+   *  The shell falls back to the clip `Listener`. */
+  onError?: (e: unknown) => void;
+}
+
+const STREAM_MAX_RECONNECTS = 8;
+
+/**
+ * Always-on capture that streams PCM to the engine's live dictation socket and
+ * surfaces interim + final captions. The mic stays open continuously — the
+ * engine owns endpointing (VAD), so unlike `Listener` there's no client-side
+ * utterance segmentation. Full-duplex by design: nothing here gates the mic
+ * while Myo replies (echo-cancellation keeps her from transcribing herself);
+ * `setGated(true)` is the lever to degrade to half-duplex if AEC is weak.
+ */
+export class StreamingListener {
+  private ctx?: AudioContext;
+  private stream?: MediaStream;
+  private source?: MediaStreamAudioSourceNode;
+  private processor?: ScriptProcessorNode;
+  private sink?: GainNode;
+  private ws?: WebSocket;
+  private sampleRate = 48000;
+
+  private closed = false; // hard-stopped by us — suppresses reconnect
+  private gated = false; // drop sends (optional half-duplex degrade)
+  private reconnects = 0;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private lastLevelLog = 0;
+  private currentSegId = -1; // utterance in progress (for onSpeechStart edge)
+
+  // Stateful linear resampler (ctx rate → 16 kHz). `tail` carries the unconsumed
+  // input across frames and `pos` the fractional read offset, so interpolation
+  // spans frame boundaries without clicks.
+  private resample = { tail: new Float32Array(0), pos: 0 };
+
+  constructor(private opts: StreamingOptions) {}
+
+  get running(): boolean {
+    return !!this.stream;
+  }
+
+  get suspended(): boolean {
+    return this.ctx?.state === "suspended";
+  }
+
+  /** Open the mic and begin streaming. Resolves once capture is live; the WS
+   *  attaches (and re-attaches) on its own, so a still-booting engine doesn't
+   *  block startup. Throws only on mic permission denial / no device. */
+  async start(): Promise<void> {
+    if (this.stream) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("getUserMedia unavailable in this WebView");
+    }
+    log("streaming: requesting microphone…");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
+    });
+    this.stream = stream;
+
+    const Ctx =
+      window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new Ctx();
+    this.ctx = ctx;
+    this.sampleRate = ctx.sampleRate;
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        /* a later user gesture (the mic button) will resume it */
+      }
+    }
+
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    const sink = ctx.createGain();
+    sink.gain.value = 0; // silent: fire onaudioprocess without echoing to speakers
+    processor.onaudioprocess = (e) => this.onFrame(e.inputBuffer.getChannelData(0));
+    source.connect(processor);
+    processor.connect(sink);
+    sink.connect(ctx.destination);
+    this.source = source;
+    this.processor = processor;
+    this.sink = sink;
+
+    log(`streaming — capture ${this.sampleRate} Hz → ${STREAM_SAMPLE_RATE} Hz, context ${ctx.state}`);
+    this.connect();
+  }
+
+  /** Hard-stop: end the stream, close the socket, release the mic. */
+  stop(): void {
+    this.closed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    const ws = this.ws;
+    this.ws = undefined;
+    if (ws) {
+      try {
+        if (ws.readyState === WebSocket.OPEN) ws.send("end");
+      } catch {
+        /* socket already gone */
+      }
+      try {
+        ws.close();
+      } catch {
+        /* already closing */
+      }
+    }
+    this.processor?.disconnect();
+    this.source?.disconnect();
+    this.sink?.disconnect();
+    this.processor = undefined;
+    this.source = undefined;
+    this.sink = undefined;
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = undefined;
+    void this.ctx?.close().catch(() => {});
+    this.ctx = undefined;
+    this.resample = { tail: new Float32Array(0), pos: 0 };
+    log("streaming: stopped");
+  }
+
+  /** Resume a context that started suspended (call from a user gesture). */
+  async resume(): Promise<void> {
+    if (this.ctx?.state === "suspended") await this.ctx.resume().catch(() => {});
+  }
+
+  /** Stop/resume *sending* audio (the half-duplex degrade). The socket stays
+   *  open; we just don't feed it. Default is ungated (full-duplex). */
+  setGated(gated: boolean): void {
+    if (this.gated === gated) return;
+    this.gated = gated;
+    log(gated ? "streaming: muted (not sending)" : "streaming: live");
+  }
+
+  // ── WebSocket lifecycle (with bounded reconnect) ──────────────────────────
+
+  private connect(): void {
+    if (this.closed) return;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(this.opts.url);
+    } catch (e) {
+      this.scheduleReconnect();
+      log("streaming: ws construction failed", e);
+      return;
+    }
+    this.ws = ws;
+    ws.onopen = () => {
+      this.reconnects = 0;
+      log("streaming: socket open");
+    };
+    ws.onmessage = (e) => {
+      if (typeof e.data === "string") this.onMessage(e.data);
+    };
+    ws.onerror = () => {
+      // onclose follows; reconnect logic lives there.
+    };
+    ws.onclose = () => {
+      if (this.ws === ws) this.ws = undefined;
+      if (this.closed) return;
+      this.scheduleReconnect();
+    };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed) return;
+    if (this.reconnects >= STREAM_MAX_RECONNECTS) {
+      this.opts.onError?.(new Error("streaming socket unavailable (gave up reconnecting)"));
+      return;
+    }
+    this.reconnects++;
+    const delay = Math.min(5000, 250 * 2 ** (this.reconnects - 1));
+    log(`streaming: socket closed — reconnecting in ${delay}ms (#${this.reconnects})`);
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
+  private onMessage(raw: string): void {
+    // A message can still be delivered after we've torn down (the engine flushes
+    // a final frame on "end" before closing); ignore it so a half-spoken
+    // utterance at mute-time can't fire a stray turn.
+    if (this.closed) return;
+    let frame: StreamFrame;
+    try {
+      frame = JSON.parse(raw) as StreamFrame;
+    } catch {
+      return;
+    }
+    if (frame.error) {
+      // A fatal engine error (e.g. onnxruntime missing); the engine closes the
+      // socket after this, so let reconnect-then-give-up surface it.
+      this.opts.onStatus?.(String(frame.error));
+      log("streaming: engine error", frame.error);
+      return;
+    }
+    if (typeof frame.status === "string") this.opts.onStatus?.(frame.status);
+    for (const seg of frame.segments ?? []) {
+      const text = seg.text ?? "";
+      const segId = seg.seg_id ?? 0;
+      if (seg.partial === true) {
+        if (segId !== this.currentSegId) {
+          this.currentSegId = segId;
+          this.opts.onSpeechStart?.();
+        }
+        this.opts.onInterim(text, segId);
+      } else {
+        // Finalized utterance.
+        if (segId === this.currentSegId) this.currentSegId = -1;
+        this.opts.onFinal(text, segId);
+      }
+    }
+    // `final: true` is the *session* ending. We never ask for that (we stream
+    // continuously), so if it arrives the engine tore the session down — let
+    // the socket close and reconnect.
+  }
+
+  // ── Capture → resample → send ─────────────────────────────────────────────
+
+  private onFrame(frame: Float32Array): void {
+    if (this.closed) return;
+    const now = performance.now();
+    if (now - this.lastLevelLog > 2000) {
+      this.lastLevelLog = now;
+      this.opts.onLevel?.(computeRms(frame));
+    }
+    const pcm = this.resampleToPcm16le(frame);
+    if (this.gated || !pcm) return;
+    const ws = this.ws;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(pcm);
+      } catch {
+        /* socket raced to closed; reconnect will re-establish */
+      }
+    }
+  }
+
+  /** Resample one capture-rate float frame to 16 kHz and pack it as
+   *  little-endian 16-bit PCM (what the engine decodes with `i16::from_le_bytes`).
+   *  Returns null when the frame produced no output samples. */
+  private resampleToPcm16le(frame: Float32Array): ArrayBuffer | null {
+    const ratio = this.sampleRate / STREAM_SAMPLE_RATE;
+    const tail = this.resample.tail;
+    const buf = new Float32Array(tail.length + frame.length);
+    buf.set(tail, 0);
+    buf.set(frame, tail.length);
+
+    const out: number[] = [];
+    let pos = this.resample.pos;
+    while (Math.floor(pos) + 1 < buf.length) {
+      const i = Math.floor(pos);
+      const frac = pos - i;
+      let s = buf[i] * (1 - frac) + buf[i + 1] * frac;
+      if (s > 1) s = 1;
+      else if (s < -1) s = -1;
+      out.push(s < 0 ? s * 0x8000 : s * 0x7fff);
+      pos += ratio;
+    }
+    const keep = Math.min(Math.floor(pos), buf.length);
+    this.resample.tail = buf.slice(keep);
+    this.resample.pos = pos - keep;
+
+    if (out.length === 0) return null;
+    const view = new DataView(new ArrayBuffer(out.length * 2));
+    for (let k = 0; k < out.length; k++) view.setInt16(k * 2, out[k] | 0, true);
+    return view.buffer;
+  }
 }
