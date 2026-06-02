@@ -137,6 +137,11 @@ class MyoStore {
   // collide with real, positive turn ids from the backend.
   private nextSyntheticTurn = -1;
   private unlisten?: () => void;
+  // Session-scoped hint for the loading indicator: has the brain produced any
+  // output yet? Until it has, the first turn's wait is most likely a one-time
+  // model load (cold start), so the pulse says "loading the model" rather than
+  // the generic "working on it". (Ported from MyOwnLLM's model-residency hint.)
+  private brainHasSpoken = false;
 
   /** Wire up the stream and pull initial state. Call once on mount. */
   async init() {
@@ -493,6 +498,13 @@ class MyoStore {
       : (this.artifacts[this.focusedArtifact] ?? null);
   }
 
+  /** Best-guess: has the chat model loaded at least once this session? Drives
+   *  the inline loading copy — generic "working on it" vs cold "loading the
+   *  model" — so the very first turn's wait reads as a one-time load. */
+  get modelLikelyResident(): boolean {
+    return this.brainHasSpoken;
+  }
+
   // ── Stream reducer ───────────────────────────────────────────────────────
 
   private turnById(id: TurnId): Turn {
@@ -509,6 +521,7 @@ class MyoStore {
     const t = this.turnById(e.turn);
     if (e.kind === "delta" && e.text) {
       t.assistant += e.text;
+      this.brainHasSpoken = true; // the model produced output → it's resident
       this.phase = "thinking";
     } else if (e.kind === "done") {
       t.done = true;

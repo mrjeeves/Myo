@@ -13,6 +13,12 @@ All notable changes to Myo are documented here. The format follows
   `setup-node`, `pnpm/action-setup`→v6, `action-gh-release`→v3). The `vite` 6→8 /
   `vite-plugin-svelte` 4→7 jump was held back — vite 8's rolldown bundler drops
   the `esbuild` minify path our config uses and needs a separate migration.
+- **Voice persona** (`MYO_PERSONA`): rewrote the default system prompt around
+  being *read aloud*. It now tells the model it's a text-to-speech voice and to
+  write in well-formed, naturally punctuated sentences — punctuation is the
+  voice's pacing and prosody — where the old wording ("just spoken sentences")
+  nudged it to drop the very punctuation TTS needs to breathe. Still leaves out
+  what the ear can't hear: markdown, headings, lists, emoji, URLs.
 
 ### Removed
 
@@ -22,6 +28,13 @@ All notable changes to Myo are documented here. The format follows
 
 ### Added
 
+- **Inline loading indicator**: while a turn waits on its first token — a cold
+  model load or just slow inference — the conversation now shows a calm,
+  rotating "shining word" pulse (`src/surfaces/LoadingPulse.svelte`) instead of
+  going silent. On the session's first turn it reads as "Loading the model…";
+  once the brain has answered once, it's the lighter "Working on it…". Ported
+  from MyOwnLLM's `LoadingPulse` (the live CPU/RAM line is omitted until Myo has
+  a usage probe).
 - **Agent core** (`crates/myo-core`): the Tauri-free, fully unit-tested heart of
   the agent — the **native brain** (`llm.rs`: streams MyOwnLLM
   `/v1/chat/completions`, normalized into a small `myo://` intent stream, with a
