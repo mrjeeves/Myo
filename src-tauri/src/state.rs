@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use myo_core::{
-    AsrClient, BrainClient, ChatMessage, LlmClient, ShellSettings, TurnAllocator, TurnId,
-    MYO_PERSONA,
+    AsrClient, BrainClient, ChatMessage, LlmClient, ShellSettings, TtsClient, TurnAllocator,
+    TurnId, MYO_PERSONA,
 };
 
 /// A spawned engine sidecar that is killed when this handle drops — so closing
@@ -53,6 +53,10 @@ pub struct MyoState {
     /// Like the brain client, it's built up front and simply fails until the
     /// model engine is serving.
     pub asr: AsrClient,
+    /// The voice: POSTs reply text to MyOwnLLM's `/v1/audio/speech` for a
+    /// hardware-tiered synthesized voice, falling back to WebSpeech when the
+    /// engine can't synthesize. Built up front like the ears.
+    pub tts: TtsClient,
     /// Myo's **native brain**: streams replies straight from MyOwnLLM's
     /// OpenAI-compatible endpoint, so a conversation needs no Odysseus (see
     /// `docs/native-agent.md`).
@@ -85,6 +89,7 @@ impl MyoState {
         token: String,
         brain: BrainClient,
         asr: AsrClient,
+        tts: TtsClient,
         llm: LlmClient,
         settings: ShellSettings,
     ) -> Self {
@@ -92,6 +97,7 @@ impl MyoState {
             token,
             brain,
             asr,
+            tts,
             llm,
             history: Mutex::new(Vec::new()),
             turns: TurnAllocator::new(),

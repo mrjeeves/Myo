@@ -17,6 +17,7 @@
 //! |---|---|
 //! | [`event`] | the normalized `myo://` intent stream the UI renders |
 //! | [`asr`] | the ears: POST captured audio to Myo's own engine (private `:11473`) |
+//! | [`tts`] | the voice: POST reply text to that same engine → synthesized audio |
 //! | [`engine`] | pinned-engine version/platform logic (self-heal a stale `myownllm`) |
 //! | [`llm`] | the native brain: streaming chat straight from MyOwnLLM (no Odysseus) |
 //! | [`brain`] | the Odysseus loopback client (multipart in, SSE → [`MyoEvent`] out) |
@@ -35,11 +36,13 @@ pub mod event;
 pub mod llm;
 pub mod paths;
 pub mod supervisor;
+pub mod tts;
 
 pub use asr::AsrClient;
-pub use brain::{BrainClient, BrainConfig, TtsAudio};
+pub use brain::{BrainClient, BrainConfig};
 pub use capabilities::Capabilities;
 pub use config::ShellSettings;
 pub use converse::{run_turn, run_turn_native, TurnAllocator};
 pub use event::{channel, Emit, MyoEvent, TurnId};
 pub use llm::{ChatMessage, LlmClient, MYO_PERSONA};
+pub use tts::{TtsAudio, TtsClient};

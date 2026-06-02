@@ -36,15 +36,16 @@ pub async fn ensure_ready(app: AppHandle, state: Arc<MyoState>) {
     start_odysseus(&app, &state).await;
     start_myownllm(&app, &state).await;
 
-    // Pre-pay the ASR engine's cold start (onnxruntime + ASR model download) in
-    // the background so Myo's first spoken words don't wait on it — once Myo's
-    // own engine is actually serving. Best-effort.
+    // Pre-pay the speech engines' cold start (onnxruntime + ASR/voice model
+    // download) in the background so Myo's first heard and first spoken words
+    // don't wait on it — once Myo's own engine is actually serving. Best-effort.
     {
         let st = state.clone();
         let health_url = format!("{}/healthz", specs::myownllm_base_url());
         tauri::async_runtime::spawn(async move {
             if specs::endpoint_reachable(&health_url).await {
                 let _ = st.asr.warm_up().await;
+                let _ = st.tts.warm_up().await;
             }
         });
     }

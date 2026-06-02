@@ -88,7 +88,7 @@ async fn spawn_text_turn(
     let done_task = done.clone();
     let handle = tauri::async_runtime::spawn(async move {
         let mut sink = |ev: MyoEvent| emit(&app_task, ev);
-        match myo_core::run_turn_native(&st.llm, &messages, turn, &mut sink).await {
+        match myo_core::run_turn_native(&st.llm, &st.tts, &messages, turn, &mut sink).await {
             Ok(reply) => st.record_reply(reply),
             Err(e) => {
                 // Surface the failure and unblock the turn so the UI doesn't hang.
@@ -267,8 +267,10 @@ pub async fn myo_tts_speak(
 ) -> Result<TurnId, String> {
     let state = state.inner().clone();
     let turn = state.turns.allocate();
-    match state.brain.tts(&text).await.map_err(|e| e.to_string())? {
-        Some(a) => emit(
+    // Synthesize via the engine Myo owns; degrade to WebSpeech on any failure
+    // (route absent, warming, or synthesis unavailable) — the tier-4 fallback.
+    match state.tts.synthesize(&text, None).await {
+        Ok(a) => emit(
             &app,
             MyoEvent::AudioReady {
                 turn,
@@ -276,7 +278,7 @@ pub async fn myo_tts_speak(
                 mime: a.mime,
             },
         ),
-        None => emit(&app, MyoEvent::AudioSpeak { turn, text }),
+        Err(_) => emit(&app, MyoEvent::AudioSpeak { turn, text }),
     }
     Ok(turn)
 }
