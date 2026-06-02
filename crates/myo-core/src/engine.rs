@@ -10,16 +10,21 @@
 //! the platform→asset mapping, and the release URL. The IO (running `--version`,
 //! downloading, emitting `myo://engine`) lives in the binary.
 
-/// Reduce a `myownllm --version` line (`"myownllm 0.2.24"`) to its version
-/// token (`"0.2.24"`): the last whitespace-separated word of the first line.
-/// Mirrors `build.rs`'s `engine_version`.
+/// Find the version token in a `myownllm --version` output — the first
+/// whitespace-separated token shaped like a dotted numeric version
+/// (`"0.2.24"`). Scanning for the *shape* (rather than blindly taking the first
+/// line's last word) keeps it robust to leading log noise the engine may print
+/// around the version line.
 pub fn parse_version_token(version_output: &str) -> Option<&str> {
     version_output
-        .lines()
-        .next()?
         .split_whitespace()
-        .next_back()
-        .filter(|s| !s.is_empty())
+        .find(|tok| looks_like_version(tok))
+}
+
+/// A token shaped like `MAJOR.MINOR[.PATCH…]` of integers (≥ 2 components, so a
+/// bare number in a log line isn't mistaken for a version).
+fn looks_like_version(token: &str) -> bool {
+    parse_components(token).is_some_and(|c| c.len() >= 2)
 }
 
 /// Is `have` at least `want`, comparing dotted numeric components (the shorter
@@ -91,6 +96,14 @@ mod tests {
         assert_eq!(parse_version_token("myownllm 0.2.24"), Some("0.2.24"));
         assert_eq!(parse_version_token("0.2.24\n"), Some("0.2.24"));
         assert_eq!(parse_version_token(""), None);
+        // Robust to leading log noise (the real engine prints `[ort_setup]…`
+        // diagnostics around `--version`; if any lands on stdout we still find
+        // the version rather than misreading "location(s)" and refetching).
+        assert_eq!(
+            parse_version_token("[ort_setup] checked 12 location(s)\nmyownllm 0.2.24"),
+            Some("0.2.24")
+        );
+        assert_eq!(parse_version_token("no version here at all"), None);
     }
 
     #[test]
