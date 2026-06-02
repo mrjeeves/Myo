@@ -130,6 +130,20 @@ impl MyoState {
             .push(ChatMessage::assistant(text));
     }
 
+    /// Tear down every engine Myo *spawned* — each [`EngineChild`]'s `Drop` kills
+    /// and reaps its process, so closing Myo closes the stack it started (which
+    /// closes theirs in turn). Engines Myo merely *attached* to were never
+    /// tracked here, so this only ever closes what Myo itself opened. Called from
+    /// the Tauri `RunEvent::Exit` hook, since Tauri may `process::exit` on close
+    /// without unwinding (so `Drop` alone wouldn't fire).
+    pub fn shutdown(&self) {
+        let mut children = self.children.lock().unwrap();
+        if !children.is_empty() {
+            eprintln!("myo: closing {} spawned engine(s)", children.len());
+            children.clear();
+        }
+    }
+
     /// Register an in-flight turn task. Prunes any already-finished tasks first
     /// so the map stays bounded by what's actually running (the task sets its
     /// own `done` flag when it completes, rather than racing to remove itself).

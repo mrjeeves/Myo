@@ -20,6 +20,8 @@ mod events;
 mod state;
 mod supervisor;
 mod update_commands;
+#[cfg(windows)]
+mod windows;
 
 use update_commands::{
     update_apply_now, update_check_now, update_leftovers_clear, update_leftovers_list,
@@ -84,6 +86,13 @@ async fn dispatch(args: Vec<String>) -> anyhow::Result<()> {
 /// bring the engines up, and start the background watcher — all on Tauri's
 /// async runtime.
 fn run_gui() {
+    // Windows/dev: if a parent like `cargo` (under `just dev`) dies, come down
+    // with it so the engines Myo spawned don't orphan — a Tauri GUI app detaches
+    // from the terminal, so a shell Ctrl-C never reaches it. No-op for
+    // Explorer-launched / installed runs.
+    #[cfg(windows)]
+    windows::install_parent_watchdog();
+
     // A bare `myo` on a headless box would otherwise exit silently when the
     // webview can't find a display — point the user at the CLI instead.
     #[cfg(target_os = "linux")]
@@ -116,6 +125,8 @@ fn run_gui() {
     let llm = myo_core::LlmClient::new(myo_core::supervisor::myownllm_base_url())
         .expect("failed to build the LLM client");
     let app_state = std::sync::Arc::new(state::MyoState::new(token, brain, asr, llm, settings));
+    // A clone for the exit hook below (the setup closure moves the other one).
+    let exit_state = app_state.clone();
 
     tauri::Builder::default()
         .manage(app_state.clone())
@@ -150,8 +161,17 @@ fn run_gui() {
             tauri::async_runtime::spawn(supervisor::ensure_ready(app_handle, app_state.clone()));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running myo");
+        .build(tauri::generate_context!())
+        .expect("error while building myo")
+        .run(move |_app_handle, event| {
+            // When Myo closes, close the engines it started — so the whole stack
+            // comes down with it (and each engine, like MyOwnLLM, closes its own
+            // children in turn). Tauri may `process::exit` on close without
+            // unwinding, so kill-on-Drop alone wouldn't fire; do it here.
+            if let tauri::RunEvent::Exit = event {
+                exit_state.shutdown();
+            }
+        });
 }
 
 fn print_help() {

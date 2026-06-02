@@ -183,6 +183,14 @@ fn spawn(spec: &specs::EngineSpec) -> Result<EngineChild> {
     let child = cmd
         .spawn()
         .with_context(|| format!("spawning {} ({})", spec.name, spec.program))?;
+    // Windows: tie the engine to Myo's lifetime via a kill-on-close Job Object,
+    // so closing Myo (any way) closes it — and, via its own job, its children.
+    // The proper teardown chain; mac/Linux rely on kill-on-Drop + RunEvent::Exit.
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        crate::windows::assign_to_kill_on_close_job(child.as_raw_handle());
+    }
     Ok(EngineChild::new(&spec.name, child))
 }
 

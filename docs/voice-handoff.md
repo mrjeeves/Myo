@@ -150,12 +150,17 @@ clip path has.
 
 ## Gotchas / known follow-ups
 
-- **Orphans from a Ctrl-C'd `just dev`.** On macOS the `myo` GUI + its child
-  engines can survive Ctrl-C (kill-on-Drop doesn't fire on SIGINT), leaving
-  processes on `:17000`/`:11473`. Private ports + the persisted token make these
-  **benign** (same version, same token → reattach just works), but they leak and
-  cause `Address already in use` noise. **Follow-up:** a SIGINT handler that
-  tears down `EngineChild`ren, and/or reap stale engines on startup.
+- **Closing Myo closes the engines it started.** A Tauri `RunEvent::Exit` hook
+  tears down every spawned `EngineChild` (`MyoState::shutdown` → kill-on-Drop),
+  so closing the window brings the stack down with it. On **Windows** each engine
+  is also assigned to a kill-on-close **Job Object** (so a crash/taskkill still
+  reaps it, and the chain cascades — `myownllm` taking its own `myownmesh` down),
+  plus a **parent-PID watchdog** so a `just dev` Ctrl-C — which a GUI app never
+  receives — makes Myo exit and clean up ([`src-tauri/src/windows.rs`](../src-tauri/src/windows.rs)).
+  Myo only ever closes engines it *spawned*, never one it attached to (so a
+  user's own MyOwnLLM is left alone — multi-instance friendly). *Remaining:* the
+  macOS/Linux dev-Ctrl-C path still leans on the terminal's process group (no
+  watchdog there yet).
 - **Linux WebKitGTK mic** needs an `enable-media-stream` + permission-grant hook
   in the setup (Windows/macOS handled). Small follow-up.
 - **One-shot `/v1/audio/transcriptions` rebuilds the model per call** — fine for
