@@ -119,11 +119,11 @@ async fn start_odysseus(app: &AppHandle, state: &Arc<MyoState>) {
     }
 }
 
-/// Bring up `myownllm serve` on :1473 — this is the **brain's** OpenAI chat
-/// endpoint (Odysseus talks to it as a model provider). Transcription does NOT
-/// use this: it runs the bundled engine's `transcribe` subcommand directly (see
-/// [`crate::core_api`] / [`myo_core::AsrClient`]), so a stale engine here can't
-/// 404 voice input. Attaches to an already-serving instance, else spawns ours.
+/// Bring up Myo's own `myownllm serve` on the private `:11473`. This is both the
+/// brain's OpenAI chat endpoint (Odysseus talks to it as a model provider) *and*
+/// the voice loop's transcription / live-stream engine. Attaches to an
+/// already-serving instance on that port, else self-heals the local engine to
+/// the pinned version (if it's stale) and spawns ours.
 async fn start_myownllm(app: &AppHandle, state: &Arc<MyoState>) {
     let health_url = format!("{}/healthz", specs::myownllm_base_url());
     emit(app, engine("myownllm", "checking", None));
@@ -132,8 +132,16 @@ async fn start_myownllm(app: &AppHandle, state: &Arc<MyoState>) {
         return;
     }
 
+    // Resolve the engine, then make sure it's new enough to have the routes the
+    // voice loop needs. If the resolved copy is older than the pin (e.g. the
+    // bundle was a stub and we fell through to a stale `myownllm` on PATH),
+    // fetch the pinned release into a copy Myo owns — once — before spawning,
+    // rather than letting a stale engine 404 at the user.
+    let candidate = resolve_myownllm();
+    let program = crate::engine_update::ensure_pinned_engine(app, &candidate).await;
+
     emit(app, engine("myownllm", "starting", None));
-    let spec = specs::myownllm_spec(resolve_myownllm());
+    let spec = specs::myownllm_spec(program);
     if let Err(e) = spawn_into(state, &spec) {
         emit(app, engine("myownllm", "error", Some(&e.to_string())));
         return;

@@ -15,6 +15,7 @@
 // window launches without a console flash) is a later Windows task.
 
 mod core_api;
+mod engine_update;
 mod events;
 mod state;
 mod supervisor;

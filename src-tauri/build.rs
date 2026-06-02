@@ -52,10 +52,18 @@ fn main() {
 fn pinned_rev(crate_dir: &Path) -> Option<String> {
     let rev_file = crate_dir.parent().unwrap().join(".myownllm-rev");
     println!("cargo:rerun-if-changed={}", rev_file.display());
-    fs::read_to_string(&rev_file)
+    let rev = fs::read_to_string(&rev_file)
         .map(|s| s.trim().to_string())
         .ok()
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+    if let Some(r) = &rev {
+        // Stamp the pin into the runtime binary so it can self-heal a stale
+        // local engine up to *this exact version* at launch — the runtime twin
+        // of the bundling below (see `src/engine_update.rs`). Read with
+        // `option_env!`, so an absent pin just disables that path.
+        println!("cargo:rustc-env=MYOWNLLM_PINNED_REV={r}");
+    }
+    rev
 }
 
 fn write_sidecar_stub() -> std::io::Result<()> {

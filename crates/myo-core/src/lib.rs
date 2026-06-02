@@ -17,6 +17,7 @@
 //! |---|---|
 //! | [`event`] | the normalized `myo://` intent stream the UI renders |
 //! | [`asr`] | the ears: POST captured audio to Myo's own engine (private `:11473`) |
+//! | [`engine`] | pinned-engine version/platform logic (self-heal a stale `myownllm`) |
 //! | [`brain`] | the Odysseus loopback client (multipart in, SSE → [`MyoEvent`] out) |
 //! | [`capabilities`] | the 4 toggles ⇄ Odysseus's `allow_*` + `disabled_tools` |
 //! | [`converse`] | one utterance→answer→voice turn |
@@ -28,6 +29,7 @@ pub mod brain;
 pub mod capabilities;
 pub mod config;
 pub mod converse;
+pub mod engine;
 pub mod event;
 pub mod paths;
 pub mod supervisor;

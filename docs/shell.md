@@ -80,6 +80,19 @@ falls back to `MYO_MYOWNLLM_BIN`/`PATH`). So in dev: `cargo build` your sibling
 MyOwnLLM once and Myo bundles it; bump `.myownllm-rev` when the engine cuts a
 release Myo needs.
 
+**The engine self-heals at launch if the local copy is stale.** Bundling is
+build-time, so the resolved engine can still be behind the pin — most often when
+the build *couldn't* download the release (stub sidecar) and falls through to an
+older `myownllm` on `PATH`. Before spawning, [`engine_update`](../src-tauri/src/engine_update.rs)
+checks the resolved binary's `--version` against the pin (stamped in by
+`build.rs` as `MYOWNLLM_PINNED_REV`); if it's older, Myo fetches the pinned
+release into a copy it owns (`~/.myo/engine/`, cached across launches) **once** —
+narrated on `myo://engine` (`updating`/`updated`) — instead of letting a stale
+engine 404 at the user. If that fetch can't happen (offline, tag unreleased) it
+falls back to the resolved copy (`update-failed`) and the normal error path
+applies. A nice consequence: once a needed release ships, Myo picks it up at
+runtime without a rebuild.
+
 On launch the shell mints an `ODYSSEUS_INTERNAL_TOKEN`, injects it into the
 Odysseus child (so it authenticates as admin over loopback — no account needed),
 polls both engines healthy on `myo://engine`, registers MyOwnLLM as Odysseus's

@@ -61,6 +61,15 @@ then verify the streaming loop on-device and tune AEC/barge-in.
   `binaries/myownllm-<triple>` (override → sibling checkout → GitHub release
   download → stub) and Tauri ships it as an `externalBin`. Idempotent per path
   (a rebuilt sibling re-bundles; the release download is cached by tag).
+- **Runtime self-heal of a stale engine** — bundling is build-time, so the
+  resolved engine can still be behind the pin (classically: a stub bundle that
+  fell through to an old `myownllm` on PATH). Before spawning,
+  [`engine_update`](../src-tauri/src/engine_update.rs) compares the binary's
+  `--version` to the pin (stamped in as `MYOWNLLM_PINNED_REV`) and, if it's
+  older, fetches the pinned release into `~/.myo/engine/` **once** (cached,
+  narrated on `myo://engine`) rather than 404-ing at the user — falling back to
+  the local copy if the fetch can't happen. Pure version/platform logic in
+  [`engine.rs`](../crates/myo-core/src/engine.rs) (unit-tested); IO in the binary.
 - **Mic permission** — Windows WebView2 via `additionalBrowserArgs`
   (`--use-fake-ui-for-media-stream`) in
   [`tauri.conf.json`](../src-tauri/tauri.conf.json); macOS
