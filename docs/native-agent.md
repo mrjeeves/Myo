@@ -61,9 +61,10 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
    `/v1/audio/speech` (the hardware-tiered voice — Kokoro/Piper, picked
    engine-side); `run_turn_native` emits `AudioReady{b64,mime}` (the UI plays
    it) on success and degrades to WebSpeech `AudioSpeak` otherwise. Pinned to
-   `.myownllm-rev` 0.2.25 (the engine that ships the route). End-to-end audio
-   lands once the engine's synthesis inference does — until then Myo gracefully
-   falls back to WebSpeech, which is also the permanent last-resort tier.
+   `.myownllm-rev` 0.2.27 — the engine that ships real synthesis (Kokoro/Piper
+   ONNX forward) plus a self-installing espeak-ng phonemizer, so end-to-end
+   audio is live with no system dependency. WebSpeech stays the permanent
+   last-resort tier for when the engine errors or is unreachable.
 4. **Tools + capability gating.** A native tool-call loop (the model proposes a
    tool, Myo runs it, feeds the result back), wired to the existing four toggles
    (`web`/`files`/`code`/`reach_out`). Emit `activity`/`artifact` events (the UI
