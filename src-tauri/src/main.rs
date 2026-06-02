@@ -5,10 +5,9 @@
 //! way it FIRST applies any self-update staged by a previous run, so upgrades
 //! land hands-free.
 //!
-//! This is the seed of the Myo orchestrator from `docs/PLAN.md`: the voice
-//! spine, ASR, and brain client (PLAN steps 2–7) grow into this same crate. For
-//! now the desktop window hosts the auto-update Settings panel — proving the
-//! engine ↔ Tauri command ↔ Svelte surface path end to end.
+//! The desktop window hosts the native agent — the voice spine, ASR, the native
+//! brain, and the dissolved-UI surfaces — over the engine ↔ Tauri command ↔
+//! Svelte surface path. See `docs/native-agent.md` and `docs/shell.md`.
 
 // NOTE: we stay on the console subsystem on Windows so `myo update` prints to
 // the terminal. The GUI-subsystem + parent-console-attach polish (so the

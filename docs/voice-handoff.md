@@ -1,31 +1,27 @@
-# Voice loop — status & handoff
+# The voice loop — how it works
 
-A snapshot of the voice (ears → brain → voice) work and exactly how to continue
-it. Written as a handoff: read this top-to-bottom and you can pick up mid-stream.
+How the voice path (ears → native brain → voice) is wired, the streaming
+protocol, and the refinements still open. For the broader shell see
+[`shell.md`](shell.md); for the direction, [`native-agent.md`](native-agent.md).
 
-All work is on branch **`claude/kind-lamport-AhBO3`** (Myo) and the matching
-branch in MyOwnLLM. See also [`shell.md`](shell.md) (what's wired) and
-[`PLAN.md`](PLAN.md) (the blueprint).
+## TL;DR
 
-## TL;DR — where we are
-
-Voice input works **end-to-end** and now in **two modes**:
+Voice runs **end-to-end** in **two modes**:
 
 1. **Real-time streaming dictation + full-duplex** (the primary path) — the
    WebView streams 16 kHz PCM to the engine's live WebSocket, renders **interim**
-   captions as you speak, fires the brain turn on each **final**, and keeps
-   listening through Myo's own reply so you can **barge in**. Built and wired on
-   this branch; it lights up against a `myownllm` that serves `/v1/audio/stream`
-   (**`0.2.24`+** — `.myownllm-rev` is pinned to it).
+   captions as you speak, fires the **native brain** turn on each **final**, and
+   keeps listening through Myo's own reply so you can **barge in**. It lights up
+   against a `myownllm` that serves `/v1/audio/stream` — guaranteed by the pin
+   (`.myownllm-rev`).
 2. **Clip-at-a-time** (the fallback) — always-on mic → energy-VAD utterance →
    one-shot transcription → turn. Used automatically when the streaming socket
-   can't be reached (engine too old / unreachable). Confirmed on macOS.
+   can't be reached (engine too old / unreachable).
 
-**Remaining:** cut/await MyOwnLLM **`0.2.24`** so the streaming engine bundles
-(until then dev uses a sibling MyOwnLLM build, or falls back to the clip path),
-then verify the streaming loop on-device and tune AEC/barge-in.
+Both transcribe via the **MyOwnLLM engine Myo owns** on a private port, then run
+the same native brain → TTS turn.
 
-## What works now (this branch)
+## What works now
 
 - **Streaming dictation (primary)** — [`StreamingListener`](../src/lib/audio-io.ts)
   opens the engine's live WebSocket (URL from the `myo_asr_stream_url` command →
@@ -47,56 +43,30 @@ then verify the streaming loop on-device and tune AEC/barge-in.
   `myo_converse_feed_audio` ([`core_api.rs`](../src-tauri/src/core_api.rs)),
   which POSTs it to the engine's `POST /v1/audio/transcriptions`
   ([`AsrClient`](../crates/myo-core/src/asr.rs)); the transcript runs the same
-  brain→TTS turn as text (`spawn_text_turn`). Audio is transient (nothing kept).
-- **Myo owns both engines on PRIVATE ports** — Odysseus (brain) on **`:17000`**,
-  MyOwnLLM (model) on **`:11473`** — *not* the shared `:7000`/`:1473`
-  ([`supervisor.rs`](../crates/myo-core/src/supervisor.rs)). This is the fix for
-  the 404 (stale engine) and 403 (foreign-brain token mismatch): Myo never
-  attaches to a user's own / orphaned instance.
-- **Persisted internal token** at `~/.myo/internal-token`
-  (`supervisor::persistent_token`) so a reused / re-attached brain authenticates
-  (no per-launch mint → no 403 on reuse).
-- **Bundled, pinned engine** — [`.myownllm-rev`](../.myownllm-rev) pins the
-  MyOwnLLM release; [`build.rs`](../src-tauri/build.rs) stages it into
+  native brain → TTS turn as text (`spawn_text_turn`). Audio is transient
+  (nothing kept).
+- **Myo owns its engine on a PRIVATE port** — MyOwnLLM on **`:11473`**, *not* the
+  shared `:1473` ([`supervisor.rs`](../crates/myo-core/src/supervisor.rs)). The
+  fix for the 404 (stale engine): Myo never attaches to a user's own / orphaned
+  instance.
+- **Bundled, pinned engine + runtime self-heal** — [`.myownllm-rev`](../.myownllm-rev)
+  pins the MyOwnLLM release; [`build.rs`](../src-tauri/build.rs) stages it into
   `binaries/myownllm-<triple>` (override → sibling checkout → GitHub release
-  download → stub) and Tauri ships it as an `externalBin`. Idempotent per path
-  (a rebuilt sibling re-bundles; the release download is cached by tag).
-- **Runtime self-heal of a stale engine** — bundling is build-time, so the
-  resolved engine can still be behind the pin (classically: a stub bundle that
-  fell through to an old `myownllm` on PATH). Before spawning,
-  [`engine_update`](../src-tauri/src/engine_update.rs) compares the binary's
-  `--version` to the pin (stamped in as `MYOWNLLM_PINNED_REV`) and, if it's
-  older, fetches the pinned release into `~/.myo/engine/` **once** (cached,
-  narrated on `myo://engine`) rather than 404-ing at the user — falling back to
-  the local copy if the fetch can't happen. Pure version/platform logic in
-  [`engine.rs`](../crates/myo-core/src/engine.rs) (unit-tested); IO in the binary.
+  download → stub), and [`engine_update`](../src-tauri/src/engine_update.rs)
+  fetches the pinned release at launch if the resolved binary is older than the
+  pin (`MYOWNLLM_PINNED_REV`). Pure version/platform logic in
+  [`engine.rs`](../crates/myo-core/src/engine.rs) (unit-tested). Full resolution
+  order: [`shell.md`](shell.md).
 - **Mic permission** — Windows WebView2 via `additionalBrowserArgs`
   (`--use-fake-ui-for-media-stream`) in
   [`tauri.conf.json`](../src-tauri/tauri.conf.json); macOS
   `NSMicrophoneUsageDescription` in [`Info.plist`](../src-tauri/Info.plist).
 
-## In flight (open PRs)
+## Streaming dictation + full-duplex
 
-- **Myo #12** (`claude/kind-lamport-AhBO3`) — everything above: bundling, private
-  ports, persisted token, the HTTP ASR client, the clip mic path, **and now the
-  streaming dictation client + full-duplex** (`StreamingListener`,
-  `myo_asr_stream_url`, the live-caption UI) with `.myownllm-rev` pinned to
-  `0.2.24`. **Merge this.**
-- **MyOwnLLM #227** — `GET /v1/audio/stream` (WebSocket) live streaming ASR (the
-  engine half this client talks to). **Merge, then cut `0.2.24`** so Myo's
-  `build.rs` can bundle a route-capable engine.
-
-Already landed in MyOwnLLM `0.2.23`: `#221` (the `/v1/audio/transcriptions`
-route) and `#224` (symphonia `pcm` codec — PCM-WAV decode). `#226` (a
-`myownllm transcribe` CLI) was **closed** — superseded by the owned-engine
-approach. `#228` (diarization fix) is unrelated to the dictation surface
-(diarization is off on the live stream).
-
-## Streaming dictation + full-duplex (implemented)
-
-The engine (MyOwnLLM #227) `GET /v1/audio/stream` drives the same live pipeline
-the MyOwnLLM app uses (Silero VAD + LocalAgreement-2), model kept **warm** for
-the connection, emitting **interim** captions as you speak + a **final** per
+The engine's `GET /v1/audio/stream` drives the same live pipeline the MyOwnLLM
+app uses (Silero VAD + LocalAgreement-2), the model kept **warm** for the
+connection, emitting **interim** captions as you speak + a **final** per
 utterance. The Myo client (`StreamingListener` + the store wiring) talks to it.
 
 **Streaming WS protocol** (the contract the client implements — keep in sync if
@@ -113,85 +83,74 @@ the engine changes):
   not a per-utterance final. `status` carries subtitles; `{ "error": … }` frames
   signal a fatal engine error (it then closes).
 
-**What's done (this branch):** the pin bump (`.myownllm-rev` → `0.2.24`); the
-`myo_asr_stream_url` command + `supervisor::myownllm_stream_url`;
-`StreamingListener` (mic → Web Audio → stateful 16 kHz resampler → LE PCM →
-WS, with bounded auto-reconnect); the store integration (streaming-first with
-clip fallback, `liveTranscript`/`asrStatus`, `onInterim`/`onFinal`/`onStreamError`,
-full-duplex `runUserTurn`, barge-in on final); and the live-caption UI. Warm
-model (the session loads once) also removes the per-utterance reload latency the
-clip path has.
+The warm model (the session loads once) removes the per-utterance reload latency
+the clip path has.
 
-**What's left:**
-1. **Cut/await MyOwnLLM `0.2.24`** so `build.rs` bundles a route-capable engine
-   (until then dev needs a built sibling `../MyOwnLLM`, or you get the clip
-   fallback). The pin is already `0.2.24`.
-2. **Verify on-device:** the streaming loop end-to-end (interim captions firming
-   into turns), and **tune full-duplex** — echo-cancellation is supposed to keep
+## Refinements still open
+
+1. **Verify on-device** — the streaming loop end-to-end (interim captions firming
+   into turns), and **tune full-duplex**: echo-cancellation is supposed to keep
    Myo from transcribing her own TTS while she speaks. If AEC proves weak (she
-   barges in on herself), the one-line degrade is to gate sends during playback:
-   call `streamer.setGated(true)` on `speaking` / `false` on idle (the lever is
+   barges in on herself), the one-line degrade is to gate sends during playback —
+   `streamer.setGated(true)` on `speaking` / `false` on idle (the lever is
    already on `StreamingListener`; the store deliberately doesn't pull it).
-3. **AudioWorklet** instead of the deprecated `ScriptProcessorNode` (both capture
-   paths still use it), and **Silero VAD** in the browser for the clip path.
+2. **AudioWorklet** instead of the deprecated `ScriptProcessorNode` (both capture
+   paths still use it), and a browser **Silero VAD** for the clip path.
+3. **Linux WebKitGTK mic** — an `enable-media-stream` + permission-grant hook in
+   the setup (Windows/macOS handled). Small follow-up.
 
 ## Decisions already made (don't re-litigate)
 
-- **Transcription rides the engine's HTTP/WS, not a bundled `myo-asr` crate, not
-  a CLI, not a raw IPC socket.** The brain already needs MyOwnLLM as an OpenAI
-  HTTP endpoint, so the engine serve exists regardless; a loopback **WebSocket**
-  is the right "IPC bridge" because the audio is captured in the WebView, which
-  speaks WS natively (a Unix socket would force a pointless Rust audio
-  round-trip). PLAN Step 2's in-process `myo-asr` extraction is **deferred** (see
+- **Transcription rides the engine's HTTP/WS, not an in-process `myo-asr` crate.**
+  The native brain already needs MyOwnLLM as an OpenAI HTTP endpoint, so the
+  engine `serve` exists regardless; a loopback **WebSocket** is the right "IPC
+  bridge" because the audio is captured in the WebView, which speaks WS natively
+  (a Unix socket would force a pointless Rust audio round-trip). The in-process
+  `myo-asr` extraction stays **deferred** (see
   [`myownllm-integration.md`](myownllm-integration.md) §1) — only needed if Myo
   ever wants ASR fully decoupled from the sidecar.
-- **Myo owns its engines on private ports** (never attach to a foreign instance).
+- **Myo owns its engine on a private port** (never attach to a foreign instance).
 - **`keep_audio` is off** — always listening, nothing stored.
 
 ## Gotchas / known follow-ups
 
-- **Closing Myo closes the engines it started.** A Tauri `RunEvent::Exit` hook
-  tears down every spawned `EngineChild` (`MyoState::shutdown` → kill-on-Drop),
-  so closing the window brings the stack down with it. On **Windows** each engine
-  is also assigned to a kill-on-close **Job Object** (so a crash/taskkill still
-  reaps it, and the chain cascades — `myownllm` taking its own `myownmesh` down),
-  plus a **parent-PID watchdog** so a `just dev` Ctrl-C — which a GUI app never
-  receives — makes Myo exit and clean up ([`src-tauri/src/windows.rs`](../src-tauri/src/windows.rs)).
-  Myo only ever closes engines it *spawned*, never one it attached to (so a
+- **Closing Myo closes the engine it started.** A Tauri `RunEvent::Exit` hook
+  tears down the spawned engine (`MyoState::shutdown` → kill-on-Drop), so closing
+  the window brings the stack down with it. On **Windows** the engine is assigned
+  to a kill-on-close **Job Object** (a crash/taskkill still reaps it, and the
+  chain cascades — `myownllm` taking its own `myownmesh` down), plus a
+  **parent-PID watchdog** so a `just dev` Ctrl-C — which a GUI app never receives
+  — makes Myo exit and clean up ([`src-tauri/src/windows.rs`](../src-tauri/src/windows.rs)).
+  Myo only ever closes an engine it *spawned*, never one it attached to (so a
   user's own MyOwnLLM is left alone — multi-instance friendly). *Remaining:* the
   macOS/Linux dev-Ctrl-C path still leans on the terminal's process group (no
   watchdog there yet).
-- **Linux WebKitGTK mic** needs an `enable-media-stream` + permission-grant hook
-  in the setup (Windows/macOS handled). Small follow-up.
 - **One-shot `/v1/audio/transcriptions` rebuilds the model per call** — fine for
-  the clip path, but caching the warm backend in `serve` would help; streaming
-  (the WS) avoids it entirely.
-- **Full-duplex relies on echo-cancellation.** The streaming path never gates
-  the mic during a reply (that's the point — barge-in). If a machine's AEC is
-  weak, Myo could transcribe her own TTS and barge in on herself; the documented
-  degrade is `streamer.setGated(true)` while `speaking` (see "What's left" #2).
+  the clip path, but the streaming WS avoids it entirely (warm session).
+- **Full-duplex relies on echo-cancellation.** The streaming path never gates the
+  mic during a reply (that's the point — barge-in). If a machine's AEC is weak,
+  Myo could transcribe her own TTS and barge in on herself; the documented degrade
+  is `streamer.setGated(true)` while `speaking` (see "Refinements" #1).
 - **Streaming falls back to clip, not the other way.** `startListening` tries the
-  WS first; on a persistent connect failure `StreamingListener` gives up
-  (bounded reconnect) and the store switches to the clip `Listener`. A too-old
-  engine (no `/v1/audio/stream`) therefore degrades gracefully — but the pin
-  (`0.2.24`) is what guarantees the route exists in the bundled engine.
-- **Dev engine source:** `build.rs` prefers a built sibling `../MyOwnLLM`
-  checkout over the release download — `cargo build` it once and Myo bundles it;
-  otherwise it downloads the pinned release.
+  WS first; on a persistent connect failure `StreamingListener` gives up (bounded
+  reconnect) and the store switches to the clip `Listener`. A too-old engine (no
+  `/v1/audio/stream`) degrades gracefully — but the pin is what guarantees the
+  route exists in the bundled engine.
 
 ## File map
 
 | Area | File |
 |---|---|
+| Native brain (chat SSE → `myo://`) | `crates/myo-core/src/llm.rs` |
 | ASR client (HTTP `/v1/audio/transcriptions`) | `crates/myo-core/src/asr.rs` |
-| Ports, specs, token, stream URL, brain↔model wiring | `crates/myo-core/src/supervisor.rs` |
-| One turn (ASR→brain→TTS) | `crates/myo-core/src/converse.rs` |
+| TTS client (`/v1/audio/speech`) | `crates/myo-core/src/tts.rs` |
+| Ports, specs, stream URL, supervision | `crates/myo-core/src/supervisor.rs` |
+| One turn (ASR → brain → TTS) | `crates/myo-core/src/converse.rs` |
 | Tauri commands (`asr_stream_url`, `feed_audio`, `say`, …) | `src-tauri/src/core_api.rs` |
-| Process supervisor (spawn/own engines, warm-up) | `src-tauri/src/supervisor.rs` |
-| Engine bundling | `src-tauri/build.rs`, `.myownllm-rev` |
+| Turn / history state (persona + context) | `src-tauri/src/state.rs` |
+| Process supervisor (spawn/own engine, warm-up) | `src-tauri/src/supervisor.rs` |
+| Engine bundling + self-heal | `src-tauri/build.rs`, `src-tauri/src/engine_update.rs`, `.myownllm-rev` |
 | Mic capture — `StreamingListener` (WS) + `Listener` (clip) + TTS playback | `src/lib/audio-io.ts` |
 | The reactive store / turn lifecycle / streaming handlers | `src/lib/stage.svelte.ts` |
-| Command + `myo://` event wrappers | `src/lib/core-api.ts` |
 | Live-caption ghost bubble + warming status | `src/surfaces/Conversation.svelte`, `Presence.svelte` |
-| Mic mute toggle | `src/surfaces/Composer.svelte` |
-| Engine streaming WS (MyOwnLLM) | `MyOwnLLM/src-tauri/src/api.rs` (`audio_stream_ws`), `transcribe.rs` (`start_remote_session_with_sink`) |
+| Engine streaming WS (MyOwnLLM) | `MyOwnLLM/src-tauri/src/api.rs` (`audio_stream_ws`), `transcribe.rs` |

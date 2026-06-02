@@ -1,95 +1,63 @@
-# Myo — Project Handoff Package
+# Myo — Documentation
 
-> **Myo *is* the AI — not an app with an AI inside it.** One voice-first
-> (touch-second, type-third) local companion with its own brain, ears, voice,
-> memory, networking, and files, where **the interface dissolves into the
-> conversation**: you mostly just talk and *watch the agent work*. UI is an
-> *output of the agent*, materialized on the fly — never a fixed frame. A thin
-> mid-layer lets you step in to approve, tweak, or edit anything. Everything runs
-> and stays **local**.
+> **Myo *is* the agent — not an app with an AI inside it.** A voice-first
+> (touch-second, type-third) local companion whose **brain, memory, tools, and
+> voice are native** (Rust), with **the interface dissolved into the
+> conversation**: you mostly just talk and *watch the agent work*. It runs one
+> local service — **MyOwnLLM** — for model selection, inference, and speech.
+> Everything runs and stays **local**.
 
-Myo is built by composing three existing local-AI projects as swappable
-"senses" behind one thin shell:
+Myo builds the stateful, interactive parts of an agent — the agent loop, memory,
+the tool loop, TTS, real-time turn-taking — **directly in Rust**, and talks to
+**[MyOwnLLM](https://github.com/mrjeeves/MyOwnLLM)** over loopback HTTP for
+inference, embeddings, and speech (ASR + TTS). **Odysseus** (a separate Python
+agent) is a **code reference** — we read it to learn *how* to do a thing, then
+reimplement it natively; it is never run. Each install is a self-contained
+**mini-myo**; installs network over a local mesh and share as a **hive**.
 
-- **Odysseus** = the **brain** (Python/FastAPI agent loop, tools, RAG, memory,
-  email/calendar/docs, research, TTS) — tracked upstream, no fork.
-- **MyOwnLLM** = the **ears** (ASR/diarization, extracted as a `myo-asr` crate)
-  and the **model engine** (`:1473` OpenAI-compatible server).
-- **MyOwnMesh** = **networking** for multi-device (v2).
+## 📚 Docs
 
----
+| File | What it is |
+|---|---|
+| **[`native-agent.md`](native-agent.md)** | **Start here.** The canonical direction + roadmap — what's native today (conversation, voice, TTS), the Odysseus→Myo feature map, and the remaining slices (memory, tools, hive). |
+| **[`shell.md`](shell.md)** | What's wired **right now** — the Core API, the `myo://` event stream, how to run it, and the bundled/self-healing MyOwnLLM sidecar. |
+| **[`voice-handoff.md`](voice-handoff.md)** | The voice loop in depth — open-mic streaming dictation + clip fallback, the streaming WS protocol, full-duplex/barge-in, and the open refinements. |
+| **[`decisions-and-rationale.md`](decisions-and-rationale.md)** | *Why* Myo is shaped this way — the native-agent pivot and the product decisions (voice-first, four-toggle control, single evolving stage, continuous presence), plus what was rejected. |
+| **[`myownllm-integration.md`](myownllm-integration.md)** | The **MyOwnLLM** engine reference — the OpenAI-compatible server Myo calls, the ASR/voice routes, the supervision + Tauri-bundling + per-arch onnxruntime patterns, and the (deferred) in-process `myo-asr` extraction. |
+| **[`myownmesh-v2.md`](myownmesh-v2.md)** | The mesh reference for the **hive** (Slice 5) — embedded-lib + control-socket IPC, 6-char pairing, capability advertisement, and how MyOwnLLM embeds the daemon. |
+| **[`auto-update.md`](auto-update.md)** | The self-updater — release feed, SHA-256 verify, atomic swap, the background watcher and the Updates panel. |
 
-## ⚠️ What this directory is
+## The shape of it
 
-This `/myo` folder is a **self-contained handoff package**. It lives on a
-**MyOwnLLM branch used purely as a transfer vehicle** — the authoring agent's
-GitHub scope was limited to `odysseus` / `MyOwnLLM` / `MyOwnMesh` and could not
-push the intended new repo. **The next agent that builds Myo will have only this
-package** (plus, ideally, write access to the new `mrjeeves/Myo` repo). So every
-contract needed to integrate the three projects is captured here as **real,
-verified code excerpts** — you should not need the original source to build v1.
+- **Brain** — native ([`crates/myo-core/src/llm.rs`](../crates/myo-core/src/llm.rs)):
+  streams MyOwnLLM `/v1/chat/completions` into a normalized `myo://` intent
+  stream; persona (`MYO_PERSONA`) + running history.
+- **Ears** — open-mic **streaming dictation** (and a clip fallback) over
+  MyOwnLLM's ASR routes; captured in the WebView, transcribed by the engine Myo
+  owns.
+- **Voice** — **native TTS** via MyOwnLLM `/v1/audio/speech` (hardware-tiered
+  Kokoro/Piper), WebSpeech as the last-resort fallback.
+- **Memory / tools** — native, **in progress** (Slices 2 & 4): a local SQLite
+  memory store + embeddings recall, and a native tool loop behind the four
+  Web/Files/Code/Reach-out toggles.
+- **Hive** — multi-device over **MyOwnMesh** (Slice 5): mini-myos discover each
+  other and share data.
+- **Engine** — MyOwnLLM, **owned**: a pinned sidecar ([`.myownllm-rev`](../.myownllm-rev))
+  bundled per-triple by [`build.rs`](../src-tauri/build.rs), self-healing to the
+  pin at launch, on a private port.
 
-**Myo's real home is its own `mrjeeves/Myo` repo.** Do not treat MyOwnLLM as
-Myo's home; it's only carrying this folder.
+## The product decisions (settled with the owner)
 
----
-
-## 📚 Files (read in this order)
-
-| # | File | What it is |
-|---|---|---|
-| 1 | **`getting-started.md`** | **Start here.** The next-agent runbook: what you have, first moves (ordered), hard rules, definition-of-done. |
-| 2 | **`PLAN.md`** | The complete integration plan — architecture, Myo Core API, repo skeleton, ordered implementation steps, verification, risks. **The master spec.** |
-| 3 | **`decisions-and-rationale.md`** | *Why* Myo is shaped this way: the five product decisions + rejected alternatives. Read before changing direction. |
-| 4 | **`odysseus-integration.md`** | The **brain's** HTTP/SSE contract with verified code excerpts — health/auth, `chat_stream`, the full **SSE event vocabulary** (the "dissolved UI" protocol), TTS, model-endpoint registration, the 4-layer permission model, the tool catalog, the future approval choke-point, memory. *You will not have the Odysseus source — this is your bible for the brain.* |
-| 5 | **`myownllm-integration.md`** | The **ASR engine** to extract (`myo-asr`), the FrameSink seam, the model sidecar, the supervision pattern to port, Tauri bundling, and per-arch onnxruntime for the 5-target matrix. |
-| 6 | **`myownmesh-v2.md`** | The **mesh** reference for the v2 multi-device milestone (embedded-lib API + control-socket IPC, pairing, how MyOwnLLM embeds it). |
-
-All line references in these docs were verified against the real source on branch
-`claude/practical-shannon-RPFiK`.
-
----
-
-## The five product decisions (settled with the owner)
-
-1. **One shell** — a fresh Tauri 2 + Svelte 5 "Myo" that *renders agent intent*, not fixed screens.
-2. **4-category control** — Web / Files / Code / Reach-out toggles composed onto Odysseus's *existing* permission knobs (coarse control, **no fork**). Per-action approve/tweak/edit is the upstreamable next layer.
-3. **Open-mic + barge-in** — full-duplex with echo cancellation so it never hears itself; hard-mute always one tap away.
+1. **Myo is the agent** — brain/memory/tools/voice are native; MyOwnLLM is the model + speech engine; Odysseus is a read-only reference.
+2. **Four-category control** — Web / Files / Code / Reach-out toggles. Per-action approve/tweak/edit is the next layer.
+3. **Open-mic + barge-in** — full-duplex with echo cancellation; hard-mute always one tap away.
 4. **Single evolving stage + history** — Presence orb + one focal Stage + ambient ActivityStrip + recallable History; surfaces are voice-addressable.
-5. **Continuous presence** — automatic local memory + RAG across days; visible, forgettable, pausable.
+5. **Continuous presence** — automatic local memory across days; visible, forgettable, pausable.
 
-See `decisions-and-rationale.md` for the full reasoning and what was rejected.
-
----
+See [`decisions-and-rationale.md`](decisions-and-rationale.md) for the full reasoning and what was rejected.
 
 ## Platforms
 
-Ship **5 target-triples** from day one: `windows-x86_64`, `linux-x86_64`,
-`linux-aarch64`, `macos-x86_64`, `macos-aarch64` (Windows x64 only — no
-Windows-on-ARM). The owner's test fleet spans all five. Stand up the 5-target CI
-matrix early; AEC differs per webview (CoreAudio / WebKitGTK / WebView2).
-
----
-
-## v1 definition of done
-
-Speak → transcribe (MyOwnLLM ASR) → answer (Odysseus agent) → speak back
-(Odysseus TTS), **full-duplex with barge-in**, while Myo natively renders the
-agent's live intent stream (activity, streamed **editable** document artifacts,
-agent `ui_control` panels) on a **single evolving stage with recallable
-history**, backed by a **continuous-presence memory** (visible/forgettable/
-pausable) and a **four-toggle control surface** (Web/Files/Code/Reach-out)
-driving Odysseus's existing permission knobs — on all **5 platforms**. The
-`PLAN.md` "Verification" section is the acceptance checklist.
-
----
-
-## Hard rules (don't violate — see `getting-started.md` §6)
-
-- **Don't fork Odysseus** and **don't build a Myo-native MCP/tool system.** Build
-  *around* Odysseus; the only Odysseus change is a later, upstreamable,
-  no-op-by-default approval hook.
-- **Don't reimplement** the brain/tools/RAG/memory/TTS (Odysseus has them) or ASR
-  (MyOwnLLM has it).
-- **Voice-first, dissolved UI, everything local.**
-- **Unknown agent event kinds: log + ignore, never crash.**
+Five target-triples — `windows-x86_64`, `linux-x86_64`, `linux-aarch64`,
+`macos-x86_64`, `macos-aarch64` (Windows x64 only). CI is a 5-target matrix; AEC
+differs per webview (CoreAudio / WebKitGTK / WebView2).

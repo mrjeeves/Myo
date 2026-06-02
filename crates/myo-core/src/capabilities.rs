@@ -14,8 +14,10 @@
 //! disable the infra/vault/management set *explicitly* ([`ALWAYS_DISABLED`]);
 //! it maps to no v1 category and is never exposed.
 //!
-//! Tool-name strings are reconciled against `docs/odysseus-integration.md` §11
-//! and Odysseus's tool registry (`src/tool_schemas.py` / `tool_security.py`).
+//! Tool-name strings are reconciled against Odysseus's tool registry
+//! (`src/tool_schemas.py` / `tool_security.py`) — the reference they were
+//! harvested from. This Odysseus-knob mapping is the lingering path until the
+//! native tool loop lands (see `docs/native-agent.md`, Slice 4).
 
 use serde::{Deserialize, Serialize};
 

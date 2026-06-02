@@ -18,29 +18,38 @@
 
 ---
 
-Myo is a local AI companion you **talk to**. It runs entirely on your machine,
-composes a few best-in-class local-AI projects as swappable *senses* — a brain,
-ears, a voice — behind one thin shell, and lets the interface **dissolve into
-the conversation**: you mostly just talk and watch it work. Your voice, your
-memory, your files. Nothing leaves the device.
+Myo is a local AI companion you **talk to**. It runs entirely on your machine
+and lets the interface **dissolve into the conversation**: you mostly just talk
+and watch it work. Your voice, your memory, your files — nothing leaves the
+device.
 
-> 🌱 **Status: early, but real — and now it talks back.** The desktop shell
-> drives its brain (the **Odysseus** agent — tools, RAG, continuous memory) and
-> renders the agent's work as a **dissolved UI**: streamed answers, a live tool
-> feed, editable document artifacts, four capability toggles, and a memory you
-> can review and forget — with a **brain→voice round-trip** (server TTS, or
-> WebSpeech fallback) and barge-in. The remaining sense is on-device **open-mic
-> ASR** (`myo-asr`); until it lands you drive turns from the composer. The whole
-> blueprint lives in **[`docs/PLAN.md`](docs/PLAN.md)**; what's wired today is in
+**Myo *is* the agent.** The brain (its agent loop + persona), memory, the tool
+loop, and the voice are built **natively** into Myo (Rust). For the heavy
+lifting it shouldn't reinvent, it runs one local service —
+**[MyOwnLLM](https://github.com/mrjeeves/MyOwnLLM)** — for per-device model
+selection, LLM inference, and speech (ASR + TTS), reached over loopback HTTP
+(`/v1/chat/completions`, `/v1/embeddings`, `/v1/audio/*`). Each install is a
+self-contained **mini-myo**; installs find each other over a local mesh and
+share as a **hive**.
+
+> 🌱 **Status: early, but real — and it talks back.** A full spoken turn already
+> runs end-to-end with **no brain sidecar**: open-mic **streaming dictation**
+> (MyOwnLLM ASR) → Myo's **native** agent answer (streamed) → **native TTS**
+> (MyOwnLLM's hardware-tiered Kokoro/Piper voice, WebSpeech fallback), with
+> barge-in — all rendered as a **dissolved UI**: streamed answers, a live tool
+> feed, editable document artifacts, the four capability toggles, and a memory
+> surface you can review and forget. The direction + roadmap live in
+> **[`docs/native-agent.md`](docs/native-agent.md)**; what's wired right now is in
 > **[`docs/shell.md`](docs/shell.md)**. ⭐ Star it to watch a companion grow up.
 
 ## ✨ Why Myo
 
 - 🗣️ **Voice-first** — talk, and interrupt by talking. Touch and type are there when you want them, never in the way.
 - 🔒 **Local-first** — on-device by design. Always-on audio and memory never leave your machine.
-- 🧠 **Composes, doesn't reinvent** — a real agent brain (tools, RAG, memory), excellent ASR, and a voice — orchestrated, not rebuilt.
+- 🧠 **Myo *is* the agent** — the brain, memory, and tools are native Rust; MyOwnLLM provides inference, ASR, and voice. No Python brain sidecar to babysit.
 - 🪟 **Dissolved UI** — surfaces *materialize* from what the agent is doing, instead of you steering fixed screens.
 - 🧵 **A continuous presence** — one ongoing relationship that remembers across days, with memory you can see, pause, and forget.
+- 🐝 **Hive-ready** — each install is a self-contained mini-myo; installs network over a local mesh and share as a hive (coming).
 - ♻️ **Set-it-and-forget-it updates** — checks, **SHA-256-verifies**, stages, and applies on next launch. No installers to babysit. → [how it works](docs/auto-update.md)
 
 ## 🚀 Install
@@ -103,17 +112,22 @@ cargo run -p myo             # launch the desktop window
 cargo test --workspace       # run the test suite
 ```
 
+> Myo bundles a pinned **MyOwnLLM** engine as a sidecar (`.myownllm-rev` +
+> [`src-tauri/build.rs`](src-tauri/build.rs)); in dev it picks up a built sibling
+> `../MyOwnLLM` checkout or downloads the pinned release. See
+> [`docs/shell.md`](docs/shell.md).
+
 ## 🧩 Layout
 
-A Cargo workspace + Svelte 5 frontend (the seed of the orchestrator in `docs/PLAN.md`):
+A Cargo workspace + Svelte 5 frontend:
 
 | Path | What it is |
 |---|---|
-| [`crates/myo-core`](crates/myo-core) | The orchestration core — the Odysseus brain client (SSE → normalized intent stream), capability mapping, engine-supervision specs, and the converse round-trip. Tauri-agnostic, fully unit-tested. |
+| [`crates/myo-core`](crates/myo-core) | The agent core — Myo's **native brain** (`llm.rs`: streams MyOwnLLM chat → a normalized `myo://` intent stream), the converse round-trip (ASR → brain → TTS), capability mapping, and engine-supervision specs. Tauri-agnostic, fully unit-tested. |
 | [`crates/myo-self-update`](crates/myo-self-update) | The self-updater — release feed, SHA-256 verify, atomic swap, background watcher. Tauri-agnostic, fully unit-tested. |
 | [`src-tauri`](src-tauri) | The `myo` binary — CLI **and** desktop shell (Tauri 2): the Core API commands, the engine supervisor, and the `myo://` event bridge. |
 | [`src`](src) | Svelte 5 frontend — the dissolved-UI surfaces (Presence, Conversation, Activity, DocumentArtifact, Control, Memory) wired to the Core API in [`src/lib`](src/lib). |
-| [`docs`](docs) | The plan, the decisions, what's-wired-today ([`shell.md`](docs/shell.md)), and the engine-integration contracts. |
+| [`docs`](docs) | The direction ([`native-agent.md`](docs/native-agent.md)), the decisions, what's-wired-today ([`shell.md`](docs/shell.md)), and the engine-integration references. |
 
 ## 🗺️ Roadmap
 
@@ -122,16 +136,18 @@ The foundations are down; the companion is real and growing.
 - [x] Self-update engine + `myo update` CLI + background watcher
 - [x] Desktop shell (Tauri 2 + Svelte 5) + Settings → Updates panel
 - [x] 5-target release pipeline + one-line installers
-- [x] 🧠 **Agent-brain integration** — the Odysseus client (`crates/myo-core`): tools, RAG, continuous memory, and the streamed intent protocol
+- [x] 🧠 **Native agent brain** — `crates/myo-core` (`llm.rs`): streams MyOwnLLM chat into the `myo://` intent protocol; persona + running history. No Odysseus.
 - [x] 🪟 **Dissolved-UI surface renderer** — streamed answers, live tool feed, editable document artifacts, agent-driven panels
-- [x] 🎛️ **Capability control + Memory** — the four Web/Files/Code/Reach-out toggles, plus review/forget/incognito
-- [x] 🗣️ **Conversation spine** — brain→voice round-trip (server TTS, WebSpeech fallback) with barge-in/cancel
-- [ ] 👂 On-device **ASR / open-mic input** (`myo-asr`) — the remaining "ears"
-- [ ] ✋ Fine-grained per-action approval (tier-b)
+- [x] 🎛️ **Capability + Memory surfaces** — the four Web/Files/Code/Reach-out toggles, plus review/forget/incognito
+- [x] 🗣️ **Conversation spine** — brain→voice round-trip (**native TTS** via MyOwnLLM `/v1/audio/speech`, WebSpeech fallback) with barge-in/cancel
+- [x] 👂 **Open-mic voice input** — streaming dictation + clip fallback (MyOwnLLM ASR), full-duplex
+- [ ] 🧠 **Native memory store** — local SQLite + embeddings recall (Slice 2)
+- [ ] 🧰 **Native tool loop** — Web/Files/Code/Reach-out actions behind the toggles (Slice 4)
+- [ ] ✋ Fine-grained per-action approval
+- [ ] 🐝 **Hive** — multi-device over a local mesh (Slice 5)
 - [ ] 📱 **iOS & Android** (mobile targets — coming)
-- [ ] 🌐 Multi-device over a local mesh
 
-See **[`docs/PLAN.md`](docs/PLAN.md)** for the full blueprint and
+See **[`docs/native-agent.md`](docs/native-agent.md)** for the blueprint and
 **[`docs/decisions-and-rationale.md`](docs/decisions-and-rationale.md)** for the *why*.
 
 ## 🤝 Contributing

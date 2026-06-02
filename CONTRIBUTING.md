@@ -2,7 +2,7 @@
 
 Thanks for being here! Myo is early — the foundations (self-update + desktop
 shell) are in, and the companion is being built on top per
-[`docs/PLAN.md`](docs/PLAN.md). Issues, ideas, and PRs are all welcome.
+[`docs/native-agent.md`](docs/native-agent.md). Issues, ideas, and PRs are all welcome.
 
 ## Dev setup
 
@@ -42,7 +42,7 @@ pnpm check                                           # Svelte/TS type-check
 | `crates/myo-self-update` | The self-updater (Tauri-agnostic, unit-tested). |
 | `src-tauri` | The `myo` binary — CLI + desktop shell. |
 | `src` | Svelte 5 frontend. |
-| `docs` | Plan, decisions, and engine-integration contracts. |
+| `docs` | Direction, decisions, and engine-integration references. |
 
 ## Conventions
 
@@ -51,9 +51,12 @@ pnpm check                                           # Svelte/TS type-check
 - **Match the surrounding style.** Rust is `rustfmt` + `clippy`-clean; tests live
   next to the code they cover.
 - **Read the *why* before changing direction.** The product decisions are
-  deliberate — see [`docs/decisions-and-rationale.md`](docs/decisions-and-rationale.md).
-  In particular, Myo *composes* its engines rather than forking them; please
-  don't reimplement a brain/ASR/tooling that an engine already provides.
+  deliberate — see [`docs/decisions-and-rationale.md`](docs/decisions-and-rationale.md)
+  and [`docs/native-agent.md`](docs/native-agent.md).
+  In particular, Myo *is* the agent: the brain, memory, tools, and TTS are
+  native (Rust), talking to MyOwnLLM for inference, ASR, and voice. Don't reach
+  back for a Python brain sidecar — Odysseus is a code *reference*, not a
+  dependency; harvest features by reimplementing them natively.
 
 ## Be kind
 

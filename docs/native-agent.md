@@ -44,7 +44,7 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
 | Short-term context (session) | `MyoState::history` (+ `chat_context`) | ✅ done |
 | Long-term memory + recall (SQLite + embeddings; ChromaDB degrades) | `memory` module (SQLite + `/v1/embeddings`) | ⏳ Slice 2 |
 | Tool loop (web/files/code/reach-out) + capability gating | `tools` module + the 4 toggles | ⏳ Slice 4 |
-| TTS provider | engine TTS via `/v1/audio/speech` → `AudioReady`, WebSpeech fallback | 🔄 Slice 3 — consumer wired; engine synth pending |
+| TTS provider | engine TTS via `/v1/audio/speech` → `AudioReady`, WebSpeech fallback | ✅ **done (Slice 3)** |
 | Scheduling / proactive ("reach out") | later | ⏳ |
 
 ## Roadmap (slices)
@@ -57,7 +57,7 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
 2. **Memory.** A local store (SQLite under `~/.myo`) of durable memories + recall
    via MyOwnLLM `/v1/embeddings`; inject the top hits into `chat_context`.
    Incognito pauses writes. (Reference: Odysseus `services/` memory + RAG.)
-3. **Native TTS — consumer wired.** `TtsClient` POSTs reply text to MyOwnLLM's
+3. **Native TTS — DONE.** `TtsClient` POSTs reply text to MyOwnLLM's
    `/v1/audio/speech` (the hardware-tiered voice — Kokoro/Piper, picked
    engine-side); `run_turn_native` emits `AudioReady{b64,mime}` (the UI plays
    it) on success and degrades to WebSpeech `AudioSpeak` otherwise. Pinned to
