@@ -250,6 +250,17 @@ pub async fn myo_memory_forget(id: String, state: Shared<'_>) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
+/// Embed text into vectors via the local model engine (`/v1/embeddings`
+/// against the `myownllm-embed` virtual ID). The primitive Myo's native
+/// memory system builds on — store these vectors and cosine-search them to
+/// recall context, all on the user's own machine. Returns one vector per
+/// input string, in order.
+#[tauri::command]
+pub async fn myo_embed(texts: Vec<String>, state: Shared<'_>) -> Result<Vec<Vec<f32>>, String> {
+    let state = state.inner().clone();
+    state.llm.embed(&texts).await.map_err(|e| e.to_string())
+}
+
 // ─── Settings & misc ────────────────────────────────────────────────────────
 
 /// The whole persisted shell-settings document.

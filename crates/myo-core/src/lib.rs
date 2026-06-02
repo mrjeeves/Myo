@@ -44,5 +44,5 @@ pub use capabilities::Capabilities;
 pub use config::ShellSettings;
 pub use converse::{run_turn, run_turn_native, TurnAllocator};
 pub use event::{channel, Emit, MyoEvent, TurnId};
-pub use llm::{ChatMessage, LlmClient, MYO_PERSONA};
+pub use llm::{ChatMessage, LlmClient, EMBED_MODEL, MYO_PERSONA};
 pub use tts::{TtsAudio, TtsClient};

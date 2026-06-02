@@ -62,6 +62,10 @@ export const api = {
   memoryList: (query?: string) =>
     invoke<unknown>("myo_memory_list", { query: query ?? null }),
   memoryForget: (id: string) => invoke<void>("myo_memory_forget", { id }),
+  /** Embed text into vectors via the local model engine (`myownllm-embed`).
+   *  One vector per input string, in order — the primitive the native
+   *  memory system uses to store and recall context locally. */
+  embed: (texts: string[]) => invoke<number[][]>("myo_embed", { texts }),
 
   settingsGet: () => invoke<ShellSettings>("myo_settings_get"),
   personaGet: () => invoke<PersonaInfo>("myo_persona_get"),
