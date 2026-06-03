@@ -22,6 +22,7 @@ use crate::brain::BrainClient;
 use crate::capabilities::Capabilities;
 use crate::event::{MyoEvent, TurnId};
 use crate::llm::{ChatMessage, LlmClient, ToolCall, TurnOutcome};
+use crate::memory::{Memory, MemoryHit, RECALL_K, RECALL_MIN_SCORE};
 use crate::tools::{self, Tool, ToolCtx, ToolResult, WebSearch, TOOL_PREAMBLE};
 use crate::tts::TtsClient;
 
@@ -102,44 +103,70 @@ pub async fn run_turn(
     Ok(())
 }
 
-/// Run one full converse turn **natively** — Myo's own agent loop.
+/// Run one full converse turn **natively** — Myo's own memory-aware agent loop.
 ///
-/// This is the native tool loop: stream the model's reply from MyOwnLLM, and if
-/// it answers with `tool_calls` instead of prose, run them (concurrently,
-/// streaming each tool's progress live), feed the results back, and let it
-/// continue — repeating until it produces a final spoken answer, which is then
-/// voiced and returned for the history.
+/// The turn weaves both memory layers together before the model runs: it embeds
+/// the user's message, **recalls** the most relevant long-term memories (Layer 2)
+/// and surfaces them to the UI, then assembles the context as persona + those
+/// recalled memories + the working-memory window (Layer 1) + this turn. From
+/// there it's the native tool loop: stream the reply, and if the model answers
+/// with `tool_calls`, run them (concurrently, streaming each tool's progress
+/// live — including `remember`/`recall`, which act on memory), feed the results
+/// back, and continue until it produces a final spoken answer. The user turn and
+/// the final reply are recorded into working memory; durable writes happen only
+/// through the `remember` tool (paused under `incognito`).
 ///
-/// There is no Odysseus in this path: `convo` is the whole context (persona +
-/// history + this user turn) the caller assembled, owned so the loop can append
-/// the intermediate tool-call / tool-result messages without touching long-term
-/// history (only the returned final answer is recorded by the caller). `caps`
-/// gates which tools are offered, and `web` is the shared search client a
-/// `web_search` call uses.
-///
-/// Voicing matches the rest of the stack: try the engine's own synthesis
-/// ([`TtsClient::synthesize`] → [`MyoEvent::AudioReady`]) and fall back to
-/// WebSpeech ([`MyoEvent::AudioSpeak`]) when it can't.
+/// There is no Odysseus in this path. `caps` gates which capability tools are
+/// offered; `web`, `llm`, and `memory` are the shared clients the tools use.
+/// Voicing matches the rest of the stack: engine synthesis
+/// ([`MyoEvent::AudioReady`]) with a WebSpeech fallback ([`MyoEvent::AudioSpeak`]).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_turn_native(
-    llm: &LlmClient,
+    llm: Arc<LlmClient>,
     tts: &TtsClient,
     web: Arc<WebSearch>,
+    memory: Arc<Memory>,
     caps: Capabilities,
-    mut convo: Vec<ChatMessage>,
+    incognito: bool,
+    persona: String,
+    user_text: String,
     turn: TurnId,
     emit: &mut (dyn FnMut(MyoEvent) + Send),
 ) -> Result<String> {
+    // ── Layer 2: recall the long-term memories most relevant to this turn, and
+    // surface them (the UI's "recalled from memory" hint). Best-effort — a cold
+    // engine just means no recall, never a failed turn.
+    let recalled = recall_relevant(&llm, &memory, &user_text).await;
+    if !recalled.is_empty() {
+        emit(MyoEvent::Progress {
+            turn,
+            kind: "memories_used".into(),
+            data: json!(recalled
+                .iter()
+                .map(|h| json!({ "text": h.text }))
+                .collect::<Vec<_>>()),
+        });
+    }
+
+    // ── Assemble the context from both layers: persona, recalled long-term
+    // memories, the working-memory window (Layer 1), then this user turn.
+    let mut convo: Vec<ChatMessage> = vec![ChatMessage::system(persona)];
+    if !recalled.is_empty() {
+        convo.push(ChatMessage::system(memory_note(&recalled)));
+    }
+    convo.extend(memory.working_window());
+    convo.push(ChatMessage::user(&user_text));
+    memory.record_user(&user_text); // working memory now holds this turn
+
+    // ── Tools: offer the enabled kit, and tell the model they're real.
     let tool_kit = tools::registry(caps);
     let schemas = tools::tool_schemas(&tool_kit);
-
-    // When any tool is on, slip a tool-aware note in right after the persona so
-    // the model knows the tools are real and that tool arguments are exempt from
-    // the voice-only writing rules.
     if !tool_kit.is_empty() {
         let at = usize::from(convo.first().map(|m| m.role == "system").unwrap_or(false));
         convo.insert(at, ChatMessage::system(TOOL_PREAMBLE));
     }
 
+    // ── The loop (recall/assembly above run once; this only iterates on tools).
     let mut round: u64 = 0;
     loop {
         // Offer tools only while rounds remain; on the final round force a plain
@@ -153,6 +180,7 @@ pub async fn run_turn_native(
             TurnOutcome::Message(text) => {
                 emit(MyoEvent::AssistantDone { turn });
                 let spoken = text.trim().to_string();
+                memory.record_assistant(&spoken); // working memory keeps the reply
                 if !spoken.is_empty() {
                     match tts.synthesize(&spoken, None).await {
                         Ok(audio) => emit(MyoEvent::AudioReady {
@@ -173,14 +201,48 @@ pub async fn run_turn_native(
                 // Record the assistant's tool-call turn so the model sees its own
                 // request alongside the results we're about to append.
                 convo.push(ChatMessage::assistant_calls(&calls));
-                for (id, content) in
-                    run_calls(&tool_kit, web.clone(), turn, round, calls, emit).await
+                for (id, content) in run_calls(
+                    &tool_kit, &llm, &web, &memory, incognito, turn, round, calls, emit,
+                )
+                .await
                 {
                     convo.push(ChatMessage::tool(id, content));
                 }
             }
         }
     }
+}
+
+/// Recall the long-term memories most relevant to `user_text` (embedding it via
+/// the engine). Empty when the store is empty, the text is blank, or the embed
+/// call fails — recall never breaks a turn.
+async fn recall_relevant(llm: &LlmClient, memory: &Memory, user_text: &str) -> Vec<MemoryHit> {
+    if user_text.trim().is_empty() || memory.long_term_len() == 0 {
+        return Vec::new();
+    }
+    match llm
+        .embed(std::slice::from_ref(&user_text.to_string()))
+        .await
+    {
+        Ok(mut vectors) if !vectors.is_empty() => {
+            memory.recall(&vectors.remove(0), RECALL_K, RECALL_MIN_SCORE)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The system note that folds recalled memories into a turn's context.
+fn memory_note(hits: &[MemoryHit]) -> String {
+    let mut s = String::from(
+        "Here are some things you remember that may be relevant. Draw on them only when they \
+         genuinely help, and don't announce that you're recalling them:\n",
+    );
+    for h in hits {
+        s.push_str("- ");
+        s.push_str(&h.text);
+        s.push('\n');
+    }
+    s
 }
 
 /// Run one round's tool calls **concurrently**, streaming each tool's
@@ -191,9 +253,13 @@ pub async fn run_turn_native(
 /// each runs as a task that streams progress over an mpsc channel; this function
 /// multiplexes that channel onto `emit` while the tasks run, and emits the
 /// `ActivityStart`/`ActivityOutput` pills itself so their ordering is stable.
+#[allow(clippy::too_many_arguments)]
 async fn run_calls(
     tool_kit: &[Arc<dyn Tool>],
-    web: Arc<WebSearch>,
+    llm: &Arc<LlmClient>,
+    web: &Arc<WebSearch>,
+    memory: &Arc<Memory>,
+    incognito: bool,
     turn: TurnId,
     round: u64,
     calls: Vec<ToolCall>,
@@ -241,6 +307,9 @@ async fn run_calls(
                     turn,
                     round,
                     web: web.clone(),
+                    llm: llm.clone(),
+                    memory: memory.clone(),
+                    incognito,
                     events: tx.clone(),
                 };
                 let name = call.name.clone();
@@ -324,53 +393,66 @@ mod tests {
     }
 
     use crate::config::WebSearchConfig;
+    use crate::memory::Memory;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// Loopback server that answers a `/v1/models` lookup once, then replies to
-    /// each subsequent chat request with the next scripted stream body — enough
-    /// to drive a multi-round tool loop end to end.
-    async fn serve_script(bodies: Vec<&'static str>) -> String {
+    /// A path-aware loopback engine: answers `/v1/models` and `/v1/embeddings`
+    /// automatically (the embedding is a fixed 3-dim unit vector), and serves the
+    /// scripted SSE bodies in order for each `/v1/chat/completions` — enough to
+    /// drive a multi-round, memory-aware tool loop end to end.
+    async fn serve_engine(chat_bodies: Vec<&'static str>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            let mut buf = [0u8; 8192];
-            // 1) /v1/models
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let _ = sock.read(&mut buf).await;
-            let models = "{\"data\":[{\"id\":\"m\"}]}";
-            let _ = sock
-                .write_all(
+            let mut chats = chat_bodies.into_iter();
+            loop {
+                let (mut sock, _) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => break,
+                };
+                let mut buf = vec![0u8; 16384];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let resp = if req.contains("/v1/models") {
+                    let body = "{\"data\":[{\"id\":\"m\"}]}";
                     format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{models}",
-                        models.len()
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
                     )
-                    .as_bytes(),
-                )
-                .await;
-            let _ = sock.flush().await;
-            // 2..) one chat stream per scripted body.
-            for body in bodies {
-                let (mut sock, _) = listener.accept().await.unwrap();
-                let _ = sock.read(&mut buf).await;
-                let _ = sock
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
-                        )
-                        .as_bytes(),
+                } else if req.contains("/v1/embeddings") {
+                    let body = "{\"data\":[{\"index\":0,\"embedding\":[1.0,0.0,0.0]}]}";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
                     )
-                    .await;
+                } else {
+                    let body = chats.next().unwrap_or("data: [DONE]\n\n");
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+                    )
+                };
+                let _ = sock.write_all(resp.as_bytes()).await;
                 let _ = sock.flush().await;
             }
         });
         format!("http://{addr}")
     }
 
+    fn deps(base: String) -> (Arc<LlmClient>, TtsClient, Arc<WebSearch>, Arc<Memory>) {
+        (
+            Arc::new(LlmClient::new(base).unwrap()),
+            // TTS points at a dead port so synthesis fails fast → WebSpeech fallback.
+            TtsClient::new("http://127.0.0.1:9").unwrap(),
+            Arc::new(WebSearch::new(WebSearchConfig::Ddg).unwrap()),
+            Arc::new(Memory::in_memory().unwrap()),
+        )
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn tool_loop_runs_a_call_then_answers() {
         // Round 1: the model asks to run `echo myo`. Round 2: it answers.
-        let base = serve_script(vec![
+        let base = serve_engine(vec![
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"echo myo\\\"}\"}}]}}]}\n\n\
              data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
              data: [DONE]\n\n",
@@ -379,11 +461,7 @@ mod tests {
              data: [DONE]\n\n",
         ])
         .await;
-
-        let llm = LlmClient::new(base).unwrap();
-        // TTS points at a dead port so synthesis fails fast → WebSpeech fallback.
-        let tts = TtsClient::new("http://127.0.0.1:9").unwrap();
-        let web = Arc::new(WebSearch::new(WebSearchConfig::Ddg).unwrap());
+        let (llm, tts, web, memory) = deps(base);
         let caps = Capabilities {
             web: false,
             files: false,
@@ -395,11 +473,14 @@ mod tests {
         let reply = {
             let mut emit = |ev: MyoEvent| events.push(ev);
             run_turn_native(
-                &llm,
+                llm.clone(),
                 &tts,
                 web,
+                memory.clone(),
                 caps,
-                vec![ChatMessage::user("say myo")],
+                false,
+                "You are Myo.".into(),
+                "say myo".into(),
                 1,
                 &mut emit,
             )
@@ -435,13 +516,16 @@ mod tests {
             .filter(|e| matches!(e, MyoEvent::AssistantDone { .. }))
             .count();
         assert_eq!(dones, 1);
+
+        // Working memory (Layer 1) captured both sides of the turn.
+        assert_eq!(memory.working_window().len(), 2);
     }
 
     #[tokio::test]
     async fn disabled_tool_is_refused_not_run() {
         // The model calls `shell` but Code is off → it's refused, and the model
         // gets a tool result it can read, then answers.
-        let base = serve_script(vec![
+        let base = serve_engine(vec![
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"rm -rf /\\\"}\"}}]}}]}\n\n\
              data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
              data: [DONE]\n\n",
@@ -450,11 +534,9 @@ mod tests {
              data: [DONE]\n\n",
         ])
         .await;
-
-        let llm = LlmClient::new(base).unwrap();
-        let tts = TtsClient::new("http://127.0.0.1:9").unwrap();
-        let web = Arc::new(WebSearch::new(WebSearchConfig::Ddg).unwrap());
-        // All tools off.
+        let (llm, tts, web, memory) = deps(base);
+        // All four toggles off (memory tools are still offered, but the model
+        // calls shell, which isn't in the kit).
         let caps = Capabilities {
             web: false,
             files: false,
@@ -466,11 +548,14 @@ mod tests {
         let reply = {
             let mut emit = |ev: MyoEvent| events.push(ev);
             run_turn_native(
-                &llm,
+                llm.clone(),
                 &tts,
                 web,
+                memory,
                 caps,
-                vec![ChatMessage::user("delete everything")],
+                false,
+                "You are Myo.".into(),
+                "delete everything".into(),
                 1,
                 &mut emit,
             )
@@ -485,5 +570,53 @@ mod tests {
             MyoEvent::ActivityOutput { output: Some(o), exit_code: None, .. }
                 if o.contains("not available")
         )));
+    }
+
+    #[tokio::test]
+    async fn recalls_relevant_memory_and_emits_hint() {
+        // One scripted answer; recall runs first (the engine auto-answers the
+        // embedding as the unit vector [1,0,0]).
+        let base = serve_engine(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Noted.\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+             data: [DONE]\n\n",
+        ])
+        .await;
+        let (llm, tts, web, memory) = deps(base);
+        // Seed a long-term memory whose embedding matches what the engine returns.
+        memory
+            .remember("the user loves sailing", "preference", vec![1.0, 0.0, 0.0])
+            .unwrap();
+
+        let caps = Capabilities::default();
+        let mut events = Vec::new();
+        {
+            let mut emit = |ev: MyoEvent| events.push(ev);
+            run_turn_native(
+                llm.clone(),
+                &tts,
+                web,
+                memory,
+                caps,
+                false,
+                "You are Myo.".into(),
+                "what do you know about me?".into(),
+                1,
+                &mut emit,
+            )
+            .await
+            .unwrap();
+        }
+
+        // The recall surfaced as a `memories_used` progress event carrying the hit.
+        let recalled = events.iter().any(|e| {
+            matches!(
+                e,
+                MyoEvent::Progress { kind, data, .. }
+                    if kind == "memories_used"
+                        && data.to_string().contains("loves sailing")
+            )
+        });
+        assert!(recalled, "relevant memory should be recalled and surfaced");
     }
 }

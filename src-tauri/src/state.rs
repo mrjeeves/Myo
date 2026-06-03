@@ -6,13 +6,21 @@
 //! (a held `std::sync::Mutex` guard would make a command future non-`Send`).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use myo_core::{
-    AsrClient, BrainClient, Capabilities, ChatMessage, LlmClient, ShellSettings, TtsClient,
+    AsrClient, BrainClient, Capabilities, DreamConfig, LlmClient, Memory, ShellSettings, TtsClient,
     TurnAllocator, TurnId, WebSearch, MYO_PERSONA,
 };
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// A spawned engine sidecar that is killed when this handle drops — so closing
 /// Myo tears the brain/model engine down with it (ported from MyOwnLLM's
@@ -41,73 +49,6 @@ impl Drop for EngineChild {
     }
 }
 
-/// One line of the running transcript, tagged with the turn it belongs to.
-///
-/// The tag is what keeps the transcript coherent now that turns *overlap*: a new
-/// utterance no longer cancels the one before it, so several turns can be in
-/// flight at once and finish out of order. Recording each reply against its turn
-/// lets us slot it back in turn order regardless of which model call returns
-/// first.
-struct HistoryEntry {
-    turn: TurnId,
-    msg: ChatMessage,
-}
-
-/// The running conversation Myo keeps for context — an ordered, turn-tagged
-/// transcript with a bounded length. Split out from [`MyoState`] (behind its own
-/// lock there) so the ordering logic is unit-testable without standing up every
-/// engine client.
-#[derive(Default)]
-struct History {
-    entries: Vec<HistoryEntry>,
-}
-
-impl History {
-    /// Keep the transcript bounded so the context sent each turn stays small.
-    const MAX: usize = 40;
-
-    /// Open a new turn: append its user message and return the full context to
-    /// send — persona first, then the transcript so far (this turn included).
-    /// The transcript is capped here (dropping the oldest entries), so context
-    /// never grows without bound.
-    fn context(&mut self, turn: TurnId, persona: String, user_text: &str) -> Vec<ChatMessage> {
-        self.entries.push(HistoryEntry {
-            turn,
-            msg: ChatMessage::user(user_text),
-        });
-        if self.entries.len() > Self::MAX {
-            let cut = self.entries.len() - Self::MAX;
-            self.entries.drain(0..cut);
-        }
-        let mut messages = Vec::with_capacity(self.entries.len() + 1);
-        messages.push(ChatMessage::system(persona));
-        messages.extend(self.entries.iter().map(|e| e.msg.clone()));
-        messages
-    }
-
-    /// Record a finished turn's reply, slotting it **after the last entry of its
-    /// own turn** (its user message) and before any later turn — so the
-    /// transcript stays in turn order even when a turn finishes before an earlier
-    /// one that's still generating. Empty replies are dropped.
-    fn record_reply(&mut self, turn: TurnId, text: String) {
-        if text.trim().is_empty() {
-            return;
-        }
-        let pos = self
-            .entries
-            .iter()
-            .rposition(|e| e.turn <= turn)
-            .map_or(0, |i| i + 1);
-        self.entries.insert(
-            pos,
-            HistoryEntry {
-                turn,
-                msg: ChatMessage::assistant(text),
-            },
-        );
-    }
-}
-
 /// Everything the commands share.
 pub struct MyoState {
     /// The minted `ODYSSEUS_INTERNAL_TOKEN` — used both to build [`Self::brain`]
@@ -126,14 +67,16 @@ pub struct MyoState {
     pub tts: TtsClient,
     /// Myo's **native brain**: streams replies straight from MyOwnLLM's
     /// OpenAI-compatible endpoint, so a conversation needs no Odysseus (see
-    /// `docs/native-agent.md`).
-    pub llm: LlmClient,
+    /// `docs/native-agent.md`). Shared (`Arc`) so memory tools can embed through
+    /// it from inside a tool task.
+    pub llm: Arc<LlmClient>,
     /// The shared web-search client the native `web_search` tool uses (keyless
     /// DuckDuckGo by default; configurable to a SearXNG instance).
     pub web: Arc<WebSearch>,
-    /// The running conversation (user/assistant turns) Myo keeps itself — the
-    /// seed of native memory. The persona is prepended per turn, not stored here.
-    history: Mutex<History>,
+    /// Myo's memory — working (recent conversation) + long-term (durable,
+    /// embedded) layers. Owns what was the in-process history; the persona is
+    /// prepended per turn, not stored here.
+    pub memory: Arc<Memory>,
     /// Allocates a fresh turn id per utterance.
     pub turns: TurnAllocator,
     /// The persisted shell settings (capabilities + incognito).
@@ -144,6 +87,9 @@ pub struct MyoState {
     /// "force stop" / teardown. The conversational flow never cancels — turns run
     /// to completion and overlap freely; talking over Myo only hushes her voice.
     pub tasks: Mutex<HashMap<TurnId, TurnTask>>,
+    /// Unix-millis of the last user-facing activity — the clock Dream mode waits
+    /// on so it only ever runs during genuine downtime.
+    last_activity_ms: AtomicI64,
 }
 
 /// A tracked turn task: its abort handle plus a flag the task sets when it's
@@ -163,8 +109,9 @@ impl MyoState {
         brain: BrainClient,
         asr: AsrClient,
         tts: TtsClient,
-        llm: LlmClient,
+        llm: Arc<LlmClient>,
         web: Arc<WebSearch>,
+        memory: Arc<Memory>,
         settings: ShellSettings,
     ) -> Self {
         Self {
@@ -174,17 +121,50 @@ impl MyoState {
             tts,
             llm,
             web,
-            history: Mutex::new(History::default()),
+            memory,
             turns: TurnAllocator::new(),
             settings: Mutex::new(settings),
             children: Mutex::new(Vec::new()),
             tasks: Mutex::new(HashMap::new()),
+            last_activity_ms: AtomicI64::new(now_ms()),
         }
     }
 
     /// The current capability toggles (which tools the agent loop may offer).
     pub fn capabilities(&self) -> Capabilities {
         self.settings.lock().unwrap().capabilities
+    }
+
+    /// Whether memory is paused for this conversation (incognito).
+    pub fn incognito(&self) -> bool {
+        self.settings.lock().unwrap().incognito
+    }
+
+    /// The Dream-mode policy (a snapshot of the persisted settings).
+    pub fn dream_config(&self) -> DreamConfig {
+        self.settings.lock().unwrap().dream.clone()
+    }
+
+    /// Mark "something just happened" — resets the downtime clock Dream mode
+    /// waits on. Called at the start and end of every turn.
+    pub fn mark_activity(&self) {
+        self.last_activity_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// Is the system in genuine downtime — no turn running, and at least
+    /// `idle_secs` since the last activity? The gate Dream mode runs behind.
+    pub fn is_idle(&self, idle_secs: u64) -> bool {
+        let running = self
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .any(|t| !t.done.load(Ordering::Relaxed));
+        if running {
+            return false;
+        }
+        let idle_for = now_ms() - self.last_activity_ms.load(Ordering::Relaxed);
+        idle_for >= (idle_secs as i64) * 1000
     }
 
     /// The system prompt every turn opens with: the user's custom persona when
@@ -204,29 +184,6 @@ impl MyoState {
             .as_deref()
             .map(str::trim)
             .is_some_and(|p| !p.is_empty())
-    }
-
-    /// Assemble the chat context for a new user turn — Myo's persona, the
-    /// running history, and this message — recording the user message in history
-    /// as we go (so the turn is on the record even before its reply lands, and
-    /// even if the user keeps talking and opens more turns over the top of it).
-    /// History is capped so the context stays bounded.
-    pub fn chat_context(&self, turn: TurnId, user_text: &str) -> Vec<ChatMessage> {
-        // Resolve the system prompt first (locks `settings`, then drops it) so we
-        // never hold the `history` and `settings` locks simultaneously.
-        let persona = self.persona();
-        self.history
-            .lock()
-            .unwrap()
-            .context(turn, persona, user_text)
-    }
-
-    /// Record a turn's reply in the running history, in turn order (an empty
-    /// reply is skipped). Turns can finish out of order — Myo lets several run at
-    /// once rather than cancelling — so the reply is slotted by its `turn`, not
-    /// merely appended.
-    pub fn record_reply(&self, turn: TurnId, text: String) {
-        self.history.lock().unwrap().record_reply(turn, text);
     }
 
     /// Tear down every engine Myo *spawned* — each [`EngineChild`]'s `Drop` kills
@@ -265,98 +222,5 @@ impl MyoState {
             }
             _ => false,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Flatten a context into `(role, content)` pairs for terse assertions.
-    fn shape(ctx: &[ChatMessage]) -> Vec<(&str, &str)> {
-        ctx.iter()
-            .map(|m| (m.role.as_str(), m.content.as_str()))
-            .collect()
-    }
-
-    #[test]
-    fn context_opens_with_persona_then_the_turn() {
-        let mut h = History::default();
-        let ctx = h.context(1, "PERSONA".into(), "hello");
-        assert_eq!(shape(&ctx), vec![("system", "PERSONA"), ("user", "hello")]);
-    }
-
-    #[test]
-    fn a_reply_lands_after_its_own_user_turn() {
-        let mut h = History::default();
-        h.context(1, "P".into(), "u1");
-        h.record_reply(1, "r1".into());
-        // The next turn sees the full prior exchange, in order.
-        let ctx = h.context(2, "P".into(), "u2");
-        assert_eq!(
-            shape(&ctx),
-            vec![
-                ("system", "P"),
-                ("user", "u1"),
-                ("assistant", "r1"),
-                ("user", "u2"),
-            ]
-        );
-    }
-
-    #[test]
-    fn overlapping_turns_stay_in_turn_order_when_replies_finish_out_of_order() {
-        // The whole point of the change: the user keeps talking, so turns 1, 2 and
-        // 3 are all open at once (no cancellation). Their replies then come back
-        // in a different order than they were asked.
-        let mut h = History::default();
-        h.context(1, "P".into(), "u1");
-        h.context(2, "P".into(), "u2");
-        h.context(3, "P".into(), "u3");
-        // Replies land 2, then 3, then 1 — yet each slots behind its own user line.
-        h.record_reply(2, "r2".into());
-        h.record_reply(3, "r3".into());
-        h.record_reply(1, "r1".into());
-
-        let ctx = h.context(4, "P".into(), "u4");
-        assert_eq!(
-            shape(&ctx),
-            vec![
-                ("system", "P"),
-                ("user", "u1"),
-                ("assistant", "r1"),
-                ("user", "u2"),
-                ("assistant", "r2"),
-                ("user", "u3"),
-                ("assistant", "r3"),
-                ("user", "u4"),
-            ]
-        );
-    }
-
-    #[test]
-    fn empty_replies_are_not_recorded() {
-        let mut h = History::default();
-        h.context(1, "P".into(), "u1");
-        h.record_reply(1, "   ".into());
-        let ctx = h.context(2, "P".into(), "u2");
-        assert_eq!(
-            shape(&ctx),
-            vec![("system", "P"), ("user", "u1"), ("user", "u2")]
-        );
-    }
-
-    #[test]
-    fn history_is_capped_to_the_most_recent_entries() {
-        let mut h = History::default();
-        // Drive well past the cap; only the newest MAX entries survive.
-        for i in 0..(History::MAX as u64 + 25) {
-            h.context(i + 1, "P".into(), "u");
-        }
-        let ctx = h.context(9999, "P".into(), "last");
-        // persona + exactly MAX transcript entries (the just-added "last" included).
-        assert_eq!(ctx.len(), History::MAX + 1);
-        assert_eq!(ctx[0].role, "system");
-        assert_eq!(ctx.last().unwrap().content, "last");
     }
 }

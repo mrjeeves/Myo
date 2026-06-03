@@ -35,29 +35,37 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::Capabilities;
 use crate::event::{MyoEvent, TurnId};
+use crate::llm::LlmClient;
+use crate::memory::Memory;
 
 pub mod files;
+pub mod memory;
 pub mod shell;
 pub mod web;
 
 pub use web::{Hit, WebSearch};
 
-/// Which capability toggle a tool belongs to. The single source of truth for
-/// whether a tool is offered at all.
+/// Which capability a tool belongs to. The single source of truth for whether a
+/// tool is offered at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Web,
     Files,
     Code,
+    /// Memory tools (`remember`/`recall`). Not one of the four opt-in toggles —
+    /// memory is part of the companion, so it's always available (incognito
+    /// pauses *writes* at execution time, not the tool's presence).
+    Memory,
 }
 
 impl Category {
-    /// Is this category's toggle on in `caps`?
+    /// Is this category enabled for `caps`?
     pub fn enabled(self, caps: Capabilities) -> bool {
         match self {
             Category::Web => caps.web,
             Category::Files => caps.files,
             Category::Code => caps.code,
+            Category::Memory => true,
         }
     }
 }
@@ -80,7 +88,8 @@ impl ToolResult {
 }
 
 /// The ambient context a tool executes in: the turn/round it belongs to, the
-/// shared web-search client, and the event channel it streams progress on.
+/// shared clients it may need (web search, the engine for embeddings, the memory
+/// system), the incognito flag, and the event channel it streams progress on.
 ///
 /// `events` is an mpsc sender the [`converse`](crate::converse) loop drains onto
 /// the real `emit` while the tool runs — so a long tool's intermittent output
@@ -89,6 +98,12 @@ pub struct ToolCtx {
     pub turn: TurnId,
     pub round: u64,
     pub web: Arc<WebSearch>,
+    /// The engine client, for tools that need to embed (memory).
+    pub llm: Arc<LlmClient>,
+    /// Myo's memory — the `remember`/`recall` tools act on it.
+    pub memory: Arc<Memory>,
+    /// When true, memory writes are paused (the `remember` tool no-ops).
+    pub incognito: bool,
     pub events: UnboundedSender<MyoEvent>,
 }
 
@@ -127,13 +142,17 @@ pub trait Tool: Send + Sync {
 }
 
 /// Build the tool kit for the given capabilities — only the tools whose category
-/// is toggled on. The order here is the order they're advertised to the model.
+/// is enabled. The memory tools are always present (their category is always on);
+/// the four toggles gate the rest. The order here is the order they're advertised
+/// to the model.
 pub fn registry(caps: Capabilities) -> Vec<Arc<dyn Tool>> {
     let all: Vec<Arc<dyn Tool>> = vec![
         Arc::new(shell::ShellTool),
         Arc::new(files::ReadFileTool),
         Arc::new(files::WriteFileTool),
         Arc::new(web::WebSearchTool),
+        Arc::new(memory::RememberTool),
+        Arc::new(memory::RecallTool),
     ];
     all.into_iter()
         .filter(|t| t.category().enabled(caps))
@@ -157,13 +176,33 @@ pub fn find(tools: &[Arc<dyn Tool>], name: &str) -> Option<Arc<dyn Tool>> {
 /// are exempt from the voice-only writing rules the persona imposes on prose.
 pub const TOOL_PREAMBLE: &str = "\
 You have a set of real tools available, described in the tools list, that act on \
-the user's own machine: you can run shell commands, read and write files, and \
-search the web. Use them whenever doing so actually helps — to check something, \
-fetch a fact, or carry out a task — rather than guessing or claiming you can't. \
-The voice-only writing rules apply to what you say out loud, not to tool \
-arguments: write shell commands, file paths, and search queries normally and \
-precisely. As you work, narrate what you're doing in a natural, spoken way, and \
-once the tools have done their job, give the user a short, plain-spoken answer.";
+the user's own machine: you can run shell commands, read and write files, search \
+the web, and remember things for next time. Use them whenever doing so actually \
+helps — to check something, fetch a fact, carry out a task, or save a detail \
+worth keeping — rather than guessing or claiming you can't. When you learn \
+something durable about the user, remember it. The voice-only writing rules apply \
+to what you say out loud, not to tool arguments: write shell commands, file \
+paths, and search queries normally and precisely. As you work, narrate what \
+you're doing in a natural, spoken way, and once the tools have done their job, \
+give the user a short, plain-spoken answer.";
+
+#[cfg(test)]
+impl ToolCtx {
+    /// A ToolCtx wired with throwaway clients (in-RAM memory, a bogus engine
+    /// URL) for tool unit tests. Tests that exercise the channel pass their own
+    /// sender; the rest can ignore the receiver.
+    pub fn test(events: UnboundedSender<MyoEvent>) -> Self {
+        Self {
+            turn: 1,
+            round: 0,
+            web: Arc::new(web::WebSearch::new(crate::config::WebSearchConfig::Ddg).unwrap()),
+            llm: Arc::new(crate::llm::LlmClient::new("http://127.0.0.1:1").unwrap()),
+            memory: Arc::new(crate::memory::Memory::in_memory().unwrap()),
+            incognito: false,
+            events,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -179,31 +218,40 @@ mod tests {
     }
 
     #[test]
-    fn registry_offers_only_enabled_categories() {
-        // Default posture: web on, files/code off → only web_search.
+    fn registry_offers_enabled_categories_plus_always_on_memory() {
+        // Default posture: web on, files/code off → web_search, and memory is
+        // always available.
         let r = registry(caps(true, false, false));
         let names: Vec<&str> = r.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["web_search"]);
+        assert_eq!(names, vec!["web_search", "remember", "recall"]);
 
-        // Code on → shell shows up; files still gated out.
+        // Code on → shell shows up; files still gated out; memory still present.
         let r = registry(caps(false, false, true));
         let names: Vec<&str> = r.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["shell"]);
+        assert_eq!(names, vec!["shell", "remember", "recall"]);
 
         // Everything on → the whole kit.
         let r = registry(caps(true, true, true));
         let names: Vec<&str> = r.iter().map(|t| t.name()).collect();
         assert_eq!(
             names,
-            vec!["shell", "read_file", "write_file", "web_search"]
+            vec![
+                "shell",
+                "read_file",
+                "write_file",
+                "web_search",
+                "remember",
+                "recall"
+            ]
         );
     }
 
     #[test]
     fn find_is_a_gate_backstop() {
-        let r = registry(caps(false, false, true)); // only shell
+        let r = registry(caps(false, false, true)); // shell + memory only
         assert!(find(&r, "shell").is_some());
-        // A disabled tool isn't in the registry, so find says no → loop refuses it.
+        assert!(find(&r, "remember").is_some()); // memory is always on
+                                                 // A disabled tool isn't in the registry, so find says no → loop refuses it.
         assert!(find(&r, "read_file").is_none());
         assert!(find(&r, "nonexistent").is_none());
     }
@@ -212,7 +260,7 @@ mod tests {
     fn schemas_are_well_formed_openai_functions() {
         let r = registry(caps(true, true, true));
         let schemas = tool_schemas(&r);
-        assert_eq!(schemas.len(), 4);
+        assert_eq!(schemas.len(), 6);
         for s in &schemas {
             assert_eq!(s["type"], "function");
             assert!(s["function"]["name"].is_string());
