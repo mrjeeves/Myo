@@ -12,13 +12,14 @@ use serde_json::Value;
 use std::path::Path;
 
 use crate::capabilities::Capabilities;
+use crate::memory::DreamConfig;
 use crate::paths::config_path;
 
 /// The persisted half of the shell's state — the `shell` key in `config.json`.
 ///
 /// `Default` is derived: it composes `Capabilities::default()` (the PLAN's
 /// "Web on, everything else off" posture) with `incognito: false`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellSettings {
     /// The four tier-a capability toggles (Web / Files / Code / Reach-out).
@@ -34,6 +35,9 @@ pub struct ShellSettings {
     /// DuckDuckGo backend, so search works out of the box with no signup; point
     /// it at a SearXNG instance for a self-hosted, JSON-clean alternative.
     pub web_search: WebSearchConfig,
+    /// Dream mode — downtime memory consolidation. Enabled by default; every
+    /// threshold is tunable here.
+    pub dream: DreamConfig,
 }
 
 /// The web-search backend the native `web_search` tool uses. Keyless by default

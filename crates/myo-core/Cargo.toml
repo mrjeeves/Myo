@@ -21,6 +21,10 @@ reqwest = { workspace = true, features = ["multipart", "stream"] }
 # streams their progress back over an mpsc channel — both from tokio's `sync`/`rt`.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util"] }
 async-trait.workspace = true
+# Long-term memory's durable store: a single-file SQLite DB under `~/.myo`
+# (roadmap Slice 2). `bundled` compiles SQLite in-tree so there's no system
+# libsqlite3 dependency — the same self-contained stance as rustls for TLS.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 # A throwaway loopback server for client integration tests (no external mocks).

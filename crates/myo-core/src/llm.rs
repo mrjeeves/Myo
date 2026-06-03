@@ -254,6 +254,39 @@ impl LlmClient {
         parse_embeddings(&v, inputs.len())
     }
 
+    /// A **non-streaming** chat completion that just returns the text — used for
+    /// background work (Dream-mode memory consolidation) where there's no turn,
+    /// no UI stream, and we only want the model's answer.
+    pub async fn complete(&self, messages: &[ChatMessage]) -> Result<String> {
+        let model = self.model().await?;
+        let body = json!({ "model": model, "messages": messages, "stream": false });
+        let resp = self
+            .http
+            .post(self.url("/v1/chat/completions"))
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "completion failed (HTTP {status}): {}",
+                txt.chars().take(300).collect::<String>()
+            ));
+        }
+        let v: Value = resp.json().await?;
+        let text = v
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        Ok(text)
+    }
+
     async fn stream(
         &self,
         model: &str,
