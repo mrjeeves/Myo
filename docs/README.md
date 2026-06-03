@@ -19,7 +19,7 @@ reimplement it natively; it is never run. Each install is a self-contained
 
 | File | What it is |
 |---|---|
-| **[`native-agent.md`](native-agent.md)** | **Start here.** The canonical direction + roadmap — what's native today (conversation, voice, TTS), the Odysseus→Myo feature map, and the remaining slices (memory, tools, hive). |
+| **[`native-agent.md`](native-agent.md)** | **Start here.** The canonical direction + roadmap — what's native today (conversation, voice, TTS, memory + Dream mode, the tool loop), the Odysseus→Myo feature map, and the remaining slices (reach-out, hive). |
 | **[`shell.md`](shell.md)** | What's wired **right now** — the Core API, the `myo://` event stream, how to run it, and the bundled/self-healing MyOwnLLM sidecar. |
 | **[`voice-handoff.md`](voice-handoff.md)** | The voice loop in depth — open-mic streaming dictation + clip fallback, the streaming WS protocol, full-duplex/barge-in, and the open refinements. |
 | **[`decisions-and-rationale.md`](decisions-and-rationale.md)** | *Why* Myo is shaped this way — the native-agent pivot and the product decisions (voice-first, four-toggle control, single evolving stage, continuous presence), plus what was rejected. |
@@ -37,9 +37,13 @@ reimplement it natively; it is never run. Each install is a self-contained
   owns.
 - **Voice** — **native TTS** via MyOwnLLM `/v1/audio/speech` (hardware-tiered
   Kokoro/Piper), WebSpeech as the last-resort fallback.
-- **Memory / tools** — native, **in progress** (Slices 2 & 4): a local SQLite
-  memory store + embeddings recall, and a native tool loop behind the four
-  Web/Files/Code/Reach-out toggles.
+- **Memory** — native, **done** (Slice 2): a **two-layer** system — working
+  memory (recent conversation) + a durable long-term store (SQLite + embeddings
+  recall) — woven into every turn, plus **Dream mode** that consolidates aging
+  memories into receding tiers during downtime and conservatively forgets.
+- **Tools** — native, **done** (Slice 4): a streaming, parallel tool loop —
+  `shell`, file read/write, keyless **web search**, and `remember`/`recall` —
+  gated by the four Web/Files/Code toggles. Reach-out + deep research are next.
 - **Hive** — multi-device over **MyOwnMesh** (Slice 5): mini-myos discover each
   other and share data.
 - **Engine** — MyOwnLLM, **owned**: a pinned sidecar ([`.myownllm-rev`](../.myownllm-rev))

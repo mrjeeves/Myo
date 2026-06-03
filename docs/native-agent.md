@@ -62,9 +62,13 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
    the local `/v1/embeddings`). Each turn (`run_turn_native`) embeds the user's
    message, recalls the top hits (emitting `memories_used`), and assembles
    persona + recalled memories + the working window + the turn. Myo writes
-   durably through the `remember` tool (and can `recall` on purpose); **incognito
-   pauses writes**; the Memory panel (`myo_memory_list`/`myo_memory_forget`) lists
-   and forgets. Automatic salience-based capture is a future extension.
+   durably **two ways**: an **automatic post-turn capture** (`memory::ingest` —
+   a plain, no-tools completion that extracts durable facts/preferences, so
+   memory fills even on a model that can't call tools, e.g. the default Gemma),
+   and the deliberate `remember` tool (tool-capable models); it can also
+   `recall` on purpose. Captures are deduped against existing memories.
+   **Incognito pauses writes**; the Memory panel
+   (`myo_memory_list`/`myo_memory_forget`) lists and forgets.
 
    **Dream mode (memory consolidation) — DONE.** Because Myo runs 24/7, the
    long-term store would grow without bound. `memory::dream` adds sleep-style

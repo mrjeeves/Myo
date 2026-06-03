@@ -17,7 +17,7 @@ spoken turn needs only Myo + its bundled MyOwnLLM.
 
 | Layer | Crate / dir | Role |
 |---|---|---|
-| **Agent core** | [`crates/myo-core`](../crates/myo-core) | Tauri-free, fully unit-tested. The **native brain** (`llm.rs`: MyOwnLLM chat SSE → normalized [`MyoEvent`](../crates/myo-core/src/event.rs) stream), the **converse** round-trip (`converse.rs`: ASR → brain → TTS), the **ASR**/**TTS** clients (`asr.rs`/`tts.rs` — the engine's `/v1/audio/*` routes), the **capability** mapping (the 4 toggles), and the engine **supervision specs**. |
+| **Agent core** | [`crates/myo-core`](../crates/myo-core) | Tauri-free, fully unit-tested. The **native brain** (`llm.rs`: MyOwnLLM chat SSE → normalized [`MyoEvent`](../crates/myo-core/src/event.rs) stream), the memory-aware **converse loop** (`converse.rs`) with a **native tool loop** (`tools/`: `shell`, `read_file`/`write_file`, `web_search`, `remember`/`recall` — streaming + parallel), the **two-layer memory** + **Dream-mode** consolidation (`memory/`), the **ASR**/**TTS** clients (`asr.rs`/`tts.rs`), the **capability** mapping (the 4 toggles), and the engine **supervision specs**. |
 | **Shell binary** | [`src-tauri`](../src-tauri) | The Core API `#[tauri::command]`s, the OS-facing **engine supervisor** (spawn + health-poll + kill-on-Drop), the in-process turn state + layered memory ([`state.rs`](../src-tauri/src/state.rs) — persona + context), and the `myo://` event bridge to the WebView. |
 | **Dissolved UI** | [`src`](../src) | The Svelte 5 surfaces — Presence, Conversation, Activity, DocumentArtifact, Control, Memory — driven by one reactive store ([`src/lib/stage.svelte.ts`](../src/lib/stage.svelte.ts)) that folds the `myo://` stream into state. |
 
@@ -36,15 +36,18 @@ Tauri commands the frontend invokes ([`src-tauri/src/core_api.rs`](../src-tauri/
 | `myo_converse_feed_audio{audio,mime}` → `turnId?` | the **clip voice path** (fallback): base64 WAV → MyOwnLLM transcription → turn (`null` = silence/empty) |
 | `myo_converse_cancel{turn}` | explicit **hard-stop** of an in-flight turn (force-stop / teardown). The conversational flow never cancels — replies generate one at a time (a draining accumulator) and talking over Myo only hushes her voice (frontend); see [`voice-handoff.md`](voice-handoff.md). |
 | `myo_converse_feed_wav{path}` → `turnId?` | WAV-**file** bypass (CI / "transcribe this file") → turn |
-| `myo_capabilities_get` / `myo_capabilities_set{caps}` | the four Web/Files/Code/Reach-out toggles |
-| `myo_converse_incognito{on}` | pause memory (privacy) |
-| `myo_memory_list{query?}` / `myo_memory_forget{id}` | review / forget what Myo remembers |
+| `myo_capabilities_get` / `myo_capabilities_set{caps}` | the four Web/Files/Code/Reach-out toggles (gate the native tool loop) |
+| `myo_converse_incognito{on}` | pause memory writes (privacy / incognito) |
+| `myo_memory_list{query?}` / `myo_memory_forget{id}` | review / forget what Myo remembers (the **native** long-term store) |
+| `myo_embed{texts}` → `vectors` | embed text via the engine's `/v1/embeddings` — the primitive memory recall builds on |
+| `myo_persona_get` / `myo_persona_set{persona}` | the system prompt in force (custom override or built-in default) |
 | `myo_settings_get` / `myo_tts_speak{text}` | persisted settings; one-off speech |
 
 The normalized **`myo://` event stream** ([`event.rs`](../crates/myo-core/src/event.rs))
 the UI renders: `assistant`, `transcript`, `activity`, `artifact`, `ui`
 (agent-driven `ui_control`), `progress` (incl. `memories_used`, `thinking`,
-errors), `audio` (native TTS or WebSpeech fallback), and `engine`. Adding a new
+errors), `audio` (native TTS or WebSpeech fallback), `engine`, and `dream`
+(Dream-mode consolidation status during downtime). Adding a new
 agent surface is one variant here plus one renderer there — *that* extensibility
 is the dissolved UI. The native brain emits the **same** `myo://` events the
 earlier Odysseus client did, so the surfaces didn't move.
@@ -120,12 +123,14 @@ to the text composer.
 These are real, scoped follow-ups — the shell is built *around* each seam so the
 native piece drops in without reshaping it:
 
-- **🧠 Native memory + tools (Slices 2 & 4).** The conversation, voice, and the
-  four-toggle Control surface are wired; the **native memory store** (local
-  SQLite + embeddings recall) and the **native tool loop** (the actions behind
-  Web/Files/Code/Reach-out) are the next slices. The Memory/Control *surfaces*
-  exist and currently call a lingering brain client that **degrades gracefully**
-  until those land — see [`native-agent.md`](native-agent.md).
+- **📨 Reach-out + deep research.** The native tool loop ships `shell`, file
+  read/write, keyless `web_search`, and `remember`/`recall` (Slice 4); the
+  **Reach-out** category (email/calendar) and a multi-step **deep-research** tool
+  are the next tools to drop into the same registry.
+- **🧹 Retire the lingering `BrainClient`.** Conversation, tools, and memory are
+  all native now; the Odysseus loopback client only lingers for engine-status and
+  the capability `disabled_tools` push. Removing the Odysseus supervisor + client
+  is a remaining cleanup — see [`native-agent.md`](native-agent.md).
 - **✋ Fine-grained approval.** Coarse control (the four toggles) is wired now;
   per-action approve/tweak/edit (pause a mutating tool → approve/tweak/edit →
   resume) is the next control layer. Reserved in the `myo://` event vocabulary.

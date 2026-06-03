@@ -415,6 +415,20 @@ impl LongTermMemory {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// The highest cosine similarity any stored memory has to `embedding`
+    /// (`0.0` when empty or all dimension-mismatched). Used to skip storing a
+    /// near-duplicate. Pure read — no salience side effects (unlike `recall`).
+    pub fn max_similarity(&self, embedding: &[f32]) -> f32 {
+        let q = normalize(embedding.to_vec());
+        self.cache
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|m| m.embedding.len() == q.len())
+            .map(|m| dot(&q, &m.embedding))
+            .fold(0.0_f32, f32::max)
+    }
 }
 
 /// Add `name decl` to the `memories` table if it isn't already there (a tiny,

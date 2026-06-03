@@ -92,6 +92,9 @@ async fn spawn_text_turn(
     let done_task = done.clone();
     let handle = tauri::async_runtime::spawn(async move {
         let mut sink = |ev: MyoEvent| emit(&app_task, ev);
+        // Keep the user's words for automatic memory capture below (the loop
+        // consumes `text`).
+        let user_text = text.clone();
         // The loop records the user turn and the reply into working memory itself.
         match myo_core::run_turn_native(
             st.llm.clone(),
@@ -107,7 +110,16 @@ async fn spawn_text_turn(
         )
         .await
         {
-            Ok(_reply) => {}
+            Ok(reply) => {
+                // Capture any durable memory from this exchange — model-independent,
+                // so memory fills even when the served model can't call the
+                // `remember` tool. Detached so it never delays the conversation.
+                let llm = st.llm.clone();
+                let mem = st.memory.clone();
+                tauri::async_runtime::spawn(async move {
+                    myo_core::memory::ingest_turn(&llm, &mem, &user_text, &reply, incognito).await;
+                });
+            }
             Err(e) => {
                 // Surface the failure and unblock the turn so the UI doesn't hang.
                 emit(
