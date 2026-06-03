@@ -5,6 +5,7 @@
   import { myo } from "../lib/stage.svelte";
   import Activity from "./Activity.svelte";
   import LoadingPulse from "./LoadingPulse.svelte";
+  import ModelLoadBar from "./ModelLoadBar.svelte";
 
   let scroller: HTMLDivElement;
 
@@ -25,6 +26,11 @@
 </script>
 
 <div class="conversation" bind:this={scroller}>
+  <!-- Force-load progress: a real bar while a model downloads/loads into
+       memory, pinned at the top so it stays visible as the conversation grows.
+       Self-hides when nothing is being acquired. -->
+  <ModelLoadBar />
+
   {#if myo.turns.length === 0 && !myo.liveTranscript}
     <div class="empty">
       <p>{myo.asrStatus || "Say hello — Myo is listening."}</p>

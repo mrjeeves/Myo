@@ -121,6 +121,20 @@ export interface ProgressEvent {
   kind: string;
   data: unknown;
 }
+/** One model the engine is acquiring right now, mirrored from MyOwnLLM's
+ *  `/v1/myownllm/progress`. Arrives on `myo://progress` as a `kind:
+ *  "model_load"` event whose `data.active` is `ModelLoadEntry[]` (empty to
+ *  dismiss the bar). `percent` is 0–1 for a byte-counted download, absent while
+ *  the model loads into memory. */
+export interface ModelLoadEntry {
+  model: string;
+  kind: string;
+  phase: "downloading" | "loading" | "ready" | "error";
+  percent?: number | null;
+  completed: number;
+  total: number;
+  detail: string;
+}
 export interface AudioEvent {
   turn: TurnId;
   kind: "ready" | "speak";
