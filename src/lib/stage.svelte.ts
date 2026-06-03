@@ -136,10 +136,11 @@ class MyoStore {
   // real-time WebSocket dictation; `listener` is the clip/energy-VAD fallback.
   private streamer?: StreamingListener;
   private listener?: Listener;
-  // Myo no longer cancels a reply when you keep talking — several turns can be
-  // generating at once. These are the turn ids still in flight (added when a turn
-  // opens, removed once it produces audio, finishes empty, or errors); the phase
-  // reads "thinking" while any remain.
+  // Generation is **single-flight**: at most one reply is ever generated at a
+  // time (the accumulator's drain gates on this being empty — see `tryDrain`).
+  // Kept as a set so the phase machinery can cheaply ask "is anything generating?"
+  // — an entry is added when a turn opens and removed once it produces audio,
+  // finishes empty, or errors; the phase reads "thinking" while it's non-empty.
   private generating = new Set<TurnId>();
   // Replies are voiced one at a time, in the order they come back, so Myo never
   // talks over herself. `audioPlaying` plus a `playToken` (bumped to abandon the
@@ -157,6 +158,19 @@ class MyoStore {
   // Sustained-talk-over tracking for barge-in (timestamps in ms; 0 = no window).
   private talkOverStart = 0;
   private lastUserVoiceAt = 0;
+  // ── The draining accumulator ────────────────────────────────────────────────
+  // The user's finalized-but-unprocessed speech. While Myo is generating a reply
+  // we don't open a competing turn — we just keep transcribing into here. The
+  // instant generation frees up, if there's text waiting it drains as one turn;
+  // if there isn't, Myo sits. That's what keeps the back-and-forth natural: a
+  // sentence said across a pause isn't chopped into separate turns, and talking
+  // while she thinks accumulates into her next reply instead of piling up.
+  private accumulator = "";
+  // True from the moment a drain decides to open a turn until that turn is
+  // registered as generating — it closes the `await` gap in `runUserTurn` so two
+  // finals landing back-to-back can't both slip a turn through and break
+  // single-flight.
+  private opening = false;
   // The artifact currently being streamed (target for delta/update), tracked
   // separately from `focusedArtifact` (what's on the stage) so recalling an
   // older doc mid-stream can't corrupt it.
@@ -255,7 +269,7 @@ class MyoStore {
     const streamer = new StreamingListener({
       url,
       onInterim: (text) => this.onInterim(text),
-      onFinal: (text) => void this.onFinal(text),
+      onFinal: (text) => this.onFinal(text),
       onSpeechStart: () => this.onStreamSpeechStart(),
       onStatus: (s) => this.onAsrStatus(s),
       onLevel: (rms) => console.debug("[myo] idle mic level", rms.toFixed(4)),
@@ -311,21 +325,24 @@ class MyoStore {
     }
   }
 
-  /** Live caption refines as the user speaks — replace it in place, and count
-   *  each refinement as "still talking" for the barge-in window. */
+  /** Live caption refines as the user speaks. Show it appended to whatever's
+   *  already accumulated, so the running thought stays visible even while Myo is
+   *  busy generating; also count each refinement as "still talking" for barge-in. */
   private onInterim(text: string) {
-    this.liveTranscript = text;
+    this.liveTranscript = this.accumulator ? `${this.accumulator} ${text}` : text;
     this.noteUserVoiceActivity();
   }
 
-  /** A finalized utterance: open it as a turn. Full-duplex and *non-cancelling* —
-   *  it never stops the turns already in flight, it just adds another, and every
-   *  turn carries the whole conversation. (If the user kept talking over Myo, the
-   *  interim stream has already hushed her playback — see noteUserVoiceActivity.) */
-  private async onFinal(text: string) {
-    this.liveTranscript = "";
-    this.talkOverStart = 0; // the utterance closed; reopen the barge-in window
-    await this.runUserTurn(text);
+  /** A finalized utterance segment. Fold it into the accumulator (the running,
+   *  unprocessed transcription) and try to drain it — see `tryDrain` for the rule.
+   *  Never cancels a generation; at most it opens the *next* one. The text stays
+   *  visible as the live caption until it drains into its own turn. */
+  private onFinal(text: string) {
+    this.talkOverStart = 0; // the segment closed; reopen the barge-in window
+    const seg = text.trim();
+    if (seg) this.accumulator = this.accumulator ? `${this.accumulator} ${seg}` : seg;
+    this.liveTranscript = this.accumulator;
+    this.tryDrain();
   }
 
   /** Engine subtitle off the stream ("Loading model…", "Listening…", errors). */
@@ -340,6 +357,7 @@ class MyoStore {
     this.streamer?.stop();
     this.streamer = undefined;
     this.liveTranscript = "";
+    this.accumulator = "";
     this.asrStatus = "";
     if (!this.muted) void this.startClipListening();
   }
@@ -352,6 +370,7 @@ class MyoStore {
     this.listener = undefined;
     this.listening = false;
     this.liveTranscript = "";
+    this.accumulator = ""; // privacy switch: drop anything heard-but-not-yet-sent
   }
 
   /** The composer's mic button: toggle always-on listening on/off. */
@@ -404,23 +423,48 @@ class MyoStore {
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
+  /** The text composer. Typed input joins the same accumulator as dictation, so
+   *  it honours single-flight (it queues behind an in-flight reply rather than
+   *  racing it) and coalesces with anything said in the same beat. */
   async say(text: string) {
-    await this.runUserTurn(text);
-  }
-
-  /** Open one user turn (shared by the text composer and the voice paths). It
-   *  never cancels or hushes what's already running — each call just adds another
-   *  turn, and because every turn carries the whole conversation, Myo can let the
-   *  earlier replies finish and simply interject the new one when it's ready. */
-  private async runUserTurn(text: string) {
     const t = text.trim();
     if (!t) return;
+    this.accumulator = this.accumulator ? `${this.accumulator} ${t}` : t;
+    this.tryDrain();
+  }
+
+  /** The drain rule (the heart of the natural back-and-forth):
+   *   • a reply is generating (or one is mid-open) → keep accumulating; just transcribe.
+   *   • nothing generating and there's unprocessed text → send it as one turn.
+   *   • nothing generating and nothing to say → sit.
+   *  Called whenever the accumulator grows (a final lands / text is typed) or
+   *  generation frees up (a reply finishes), so the floor is taken the instant
+   *  it's both clear and there's something to say. */
+  private tryDrain() {
+    if (this.opening || this.generating.size > 0) return; // inference busy → transcribe
+    const text = this.accumulator.trim();
+    if (!text) return; // nothing unprocessed → sit
+    this.accumulator = "";
+    this.liveTranscript = ""; // it's a committed turn now, not a live caption
+    this.opening = true;
+    void this.runUserTurn(text);
+  }
+
+  /** Open one user turn — the drain target. Single-flight is already guaranteed
+   *  by `tryDrain` (it only fires when the floor is clear and sets `opening`), so
+   *  this never cancels or hushes; it just fires the brain→TTS round-trip. */
+  private async runUserTurn(text: string) {
     try {
-      const turn = await api.say(t);
+      const turn = await api.say(text);
       this.noteTurn(turn);
     } catch (e) {
       this.pushErrorTurn(String(e));
       this.syncPhase();
+    } finally {
+      this.opening = false;
+      // More may have accumulated while we were opening; if the turn failed,
+      // nothing is generating so this drains it — otherwise it harmlessly no-ops.
+      this.tryDrain();
     }
   }
 
@@ -612,6 +656,7 @@ class MyoStore {
       if (!t.assistant.trim()) {
         this.generating.delete(e.turn);
         this.syncPhase();
+        this.tryDrain(); // inference free → send anything that piled up while it ran
       }
     }
   }
@@ -709,6 +754,7 @@ class MyoStore {
       t.done = true;
       this.generating.delete(e.turn);
       this.syncPhase();
+      this.tryDrain(); // inference free → send anything that piled up while it ran
     }
   }
 
@@ -719,6 +765,10 @@ class MyoStore {
     this.generating.delete(e.turn);
     this.enqueueAudio(e);
     this.syncPhase();
+    // Generation is free now (only voicing remains) — if the user spoke while
+    // this reply was being generated, drain it into the next turn, so Myo can
+    // generate her next answer while she's still speaking this one.
+    this.tryDrain();
   }
 
   private onEngine(e: EngineEvent) {
