@@ -64,8 +64,8 @@ PLAN's own thesis: *Myo is the AI, not a shell around someone else's brain.*
    persona + recalled memories + the working window + the turn. Myo writes
    durably **two ways**: an **automatic post-turn capture** (`memory::ingest` —
    a plain, no-tools completion that extracts durable facts/preferences, so
-   memory fills even on a model that can't call tools, e.g. the default Gemma),
-   and the deliberate `remember` tool (tool-capable models); it can also
+   memory fills even when a model doesn't reach for the `remember` tool on a
+   given turn), and the deliberate `remember` tool; it can also
    `recall` on purpose. Captures are deduped against existing memories.
    **Incognito pauses writes**; the Memory panel
    (`myo_memory_list`/`myo_memory_forget`) lists and forgets.

@@ -1,8 +1,10 @@
 //! Automatic memory capture — the model-independent write path.
 //!
-//! Myo's deliberate `remember` tool only fires when the served model supports
-//! tool-calling (Qwen3 yes; the default Gemma family, no). So that long-term
-//! memory actually fills on any model, this runs after each turn: a **plain,
+//! Myo's deliberate `remember` tool only fires when the model actually chooses
+//! to call it — and even tool-capable models (Gemma 4, Qwen) don't reach for it
+//! on every turn worth remembering, and streaming tool-call support still varies
+//! by Ollama build. So that long-term memory fills regardless, this runs after
+//! each turn: a **plain,
 //! no-tools completion** ([`LlmClient::complete`]) reads the just-finished
 //! exchange and extracts any durable memory worth keeping, which is embedded and
 //! stored. It's best-effort and runs off the conversation's hot path, so it never
