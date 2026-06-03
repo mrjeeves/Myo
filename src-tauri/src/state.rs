@@ -83,7 +83,9 @@ pub struct MyoState {
     pub settings: Mutex<ShellSettings>,
     /// Spawned engine children, kept alive (and killed on app exit) here.
     pub children: Mutex<Vec<EngineChild>>,
-    /// In-flight turn tasks, so a turn can be cancelled (barge-in / user stop).
+    /// In-flight turn tasks, kept so a turn can be hard-cancelled on an explicit
+    /// "force stop" / teardown. The conversational flow never cancels — turns run
+    /// to completion and overlap freely; talking over Myo only hushes her voice.
     pub tasks: Mutex<HashMap<TurnId, TurnTask>>,
     /// Unix-millis of the last user-facing activity — the clock Dream mode waits
     /// on so it only ever runs during genuine downtime.

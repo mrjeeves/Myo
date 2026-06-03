@@ -8,6 +8,20 @@ All notable changes to Myo are documented here. The format follows
 
 ### Changed
 
+- **Conversation flows like a real back-and-forth.** Talking while Myo is thinking
+  no longer cancels the reply she's working on — *and* it no longer piles up a
+  backlog of overlapping turns. Speech is a **draining accumulator**: while she's
+  generating, what you say is just transcribed and accumulated; the instant she's
+  free, the accumulated text drains into a single coherent turn (and if nothing's
+  waiting, she sits). Because generation is **single-flight**, replies come back in
+  order — so the conversation recorded into memory stays in turn order for free.
+  Replies are still **voiced in order** (a separate queue) so she never talks over
+  herself, and she only stops *speaking* when you keep talking over her for a
+  couple of seconds while she's mid-reply (sustained barge-in) — even then the
+  generation finishes and is remembered; she just doesn't read it aloud. The
+  composer's **Stop** button is the manual form of that hush, and
+  `myo_converse_cancel` remains only as an explicit force-stop. See
+  [`docs/voice-handoff.md`](docs/voice-handoff.md) → *Turn-taking*.
 - **Dependencies**: bumped `sha2` 0.10→0.11 and `dirs` 5→6 (Rust), `typescript`
   5→6 and `svelte-check` →4.5 (frontend), and the CI actions (`checkout`,
   `setup-node`, `pnpm/action-setup`→v6, `action-gh-release`→v3). The `vite` 6→8 /

@@ -10,10 +10,13 @@ Voice runs **end-to-end** in **two modes**:
 
 1. **Real-time streaming dictation + full-duplex** (the primary path) — the
    WebView streams 16 kHz PCM to the engine's live WebSocket, renders **interim**
-   captions as you speak, fires the **native brain** turn on each **final**, and
-   keeps listening through Myo's own reply so you can **barge in**. It lights up
-   against a `myownllm` that serves `/v1/audio/stream` — guaranteed by the pin
-   (`.myownllm-rev`).
+   captions as you speak, **accumulates** each **final**, and runs the **native
+   brain** turn whenever generation is free — keeping the mic open through Myo's
+   own reply. Generation is **single-flight**: while she's thinking, your speech
+   accumulates and drains into her *next* reply rather than opening a competing
+   turn; she only stops *speaking* if you keep talking over her — see *Turn-taking*
+   below. It lights up against a `myownllm` that serves `/v1/audio/stream` —
+   guaranteed by the pin (`.myownllm-rev`).
 2. **Clip-at-a-time** (the fallback) — always-on mic → energy-VAD utterance →
    one-shot transcription → turn. Used automatically when the streaming socket
    can't be reached (engine too old / unreachable).
@@ -29,10 +32,14 @@ the same native brain → TTS turn.
   captures the mic via Web Audio, **resamples to 16 kHz mono** and streams i16-LE
   PCM continuously. Down-frames drive a live **interim** caption (a ghost bubble
   in [`Conversation.svelte`](../src/surfaces/Conversation.svelte) via
-  `myo.liveTranscript`); each **final** runs the brain turn through the proven
-  `api.say` text path ([`stage.svelte.ts`](../src/lib/stage.svelte.ts)
-  `onInterim`/`onFinal`). **Full-duplex:** the mic is never gated during a reply,
-  so a final mid-reply **barges in** (cancels + restarts). Falls back to the clip
+  `myo.liveTranscript`); each **final** is folded into the **accumulator** and
+  drained into a brain turn (via the proven `api.say` text path) the moment
+  generation is free ([`stage.svelte.ts`](../src/lib/stage.svelte.ts)
+  `onInterim`/`onFinal`/`tryDrain`). **Full-duplex, single-flight:** the mic is
+  never gated during a reply, so speech mid-reply keeps transcribing and
+  accumulates into her *next* turn instead of cancelling the one running; replies
+  are **voiced in order** so Myo never talks over herself — she only stops speaking
+  on a **sustained talk-over** (see *Turn-taking* below). Falls back to the clip
   path if the socket can't be reached.
 - **Always-on open-mic capture** in the WebView — `getUserMedia`
   (echo-cancellation). The clip fallback ([`audio-io.ts`](../src/lib/audio-io.ts)
@@ -86,6 +93,47 @@ the engine changes):
 The warm model (the session loads once) removes the per-utterance reload latency
 the clip path has.
 
+## Turn-taking: a draining accumulator (single-flight)
+
+People keep talking until something interrupts them — but they also answer **one
+thought at a time**. Myo does both with a *draining accumulator* (all in
+[`stage.svelte.ts`](../src/lib/stage.svelte.ts)):
+
+- **While Myo is generating, your speech just accumulates.** Each finalized
+  segment is appended to the running transcription (`accumulator`); no competing
+  turn is opened. She keeps *transcribing*, not answering — `onFinal` → `tryDrain`.
+- **The instant generation frees up, the accumulator drains** into a *single* turn
+  (`tryDrain`): everything said while she was busy becomes one coherent message.
+  If nothing's waiting, she just sits.
+- **When she's free and you speak, it drains immediately** — one utterance, one
+  turn, no added latency — so a quick exchange feels exactly like clean real-time
+  tracking. The live caption (`liveTranscript`) shows the accumulated text as it
+  builds, then clears as it becomes a committed turn.
+
+That's the whole trick: a sentence said across a pause isn't chopped into three
+turns + three replies, and talking while she thinks doesn't pile up a backlog — it
+folds into her next answer. The rule is literally *"if inference is running, just
+transcribe; if there's unprocessed transcription, send it; otherwise sit."*
+
+- **Generation is single-flight, so memory stays ordered for free.** At most one
+  reply generates at a time, so replies come back **in order** — the conversation
+  written into [working memory](native-agent.md) (`record_user` / `record_assistant`
+  in [`converse.rs`](../crates/myo-core/src/converse.rs)) is already in turn order;
+  no out-of-order slotting needed. (`generating` is the in-flight set the drain
+  gates on; `opening` closes the `await` gap so two finals can't both slip through.)
+- **Replies are voiced in order**, one at a time (a small queue — `enqueueAudio` /
+  `pumpAudio`), separate from generation. So Myo can generate her *next* answer
+  while still reading the previous one aloud, yet never overlaps her own voice; the
+  text lands in each turn's bubble, top-to-bottom.
+- **Barge-in stops *speaking*, not *thinking*.** Keep talking over her for
+  ~`BARGE_IN_MS` *while she's speaking* and she yields the floor: `hush()` stops
+  playback, drops the queue, and silences the replies already generated (still
+  remembered — their text shows, she just won't read them aloud). The composer's
+  **Stop** button is the manual form. Requiring *sustained* talk-over (not one
+  stray word) keeps it robust to echo-cancellation bleed — see
+  `noteUserVoiceActivity`. Whatever you say during the talk-over simply accumulates
+  and drains into her next reply once she's done.
+
 ## Refinements still open
 
 1. **Verify on-device** — the streaming loop end-to-end (interim captions firming
@@ -128,9 +176,12 @@ the clip path has.
 - **One-shot `/v1/audio/transcriptions` rebuilds the model per call** — fine for
   the clip path, but the streaming WS avoids it entirely (warm session).
 - **Full-duplex relies on echo-cancellation.** The streaming path never gates the
-  mic during a reply (that's the point — barge-in). If a machine's AEC is weak,
-  Myo could transcribe her own TTS and barge in on herself; the documented degrade
-  is `streamer.setGated(true)` while `speaking` (see "Refinements" #1).
+  mic during a reply (that's the point — talk-over barge-in). If a machine's AEC is
+  weak, Myo could transcribe her own TTS — but barge-in needs **sustained**
+  talk-over (`BARGE_IN_MS`), so a stray bleed word won't make her stop, and any
+  bleed that does get transcribed just accumulates and folds into her next reply.
+  The full remedy for a bad AEC is still the `streamer.setGated(true)` while
+  `speaking` degrade (see "Refinements" #1).
 - **Streaming falls back to clip, not the other way.** `startListening` tries the
   WS first; on a persistent connect failure `StreamingListener` gives up (bounded
   reconnect) and the store switches to the clip `Listener`. A too-old engine (no
@@ -147,7 +198,7 @@ the clip path has.
 | Ports, specs, stream URL, supervision | `crates/myo-core/src/supervisor.rs` |
 | One turn (ASR → brain → TTS) | `crates/myo-core/src/converse.rs` |
 | Tauri commands (`asr_stream_url`, `feed_audio`, `say`, …) | `src-tauri/src/core_api.rs` |
-| Turn / history state (persona + context) | `src-tauri/src/state.rs` |
+| Turn state + layered memory (persona + context) | `src-tauri/src/state.rs` |
 | Process supervisor (spawn/own engine, warm-up) | `src-tauri/src/supervisor.rs` |
 | Engine bundling + self-heal | `src-tauri/build.rs`, `src-tauri/src/engine_update.rs`, `.myownllm-rev` |
 | Mic capture — `StreamingListener` (WS) + `Listener` (clip) + TTS playback | `src/lib/audio-io.ts` |

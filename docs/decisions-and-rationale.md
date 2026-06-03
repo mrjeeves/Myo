@@ -90,7 +90,9 @@ runs.
   WebView** (`getUserMedia({echoCancellation,noiseSuppression,autoGainControl})`),
   a VAD does endpointing, PCM streams to **MyOwnLLM's live ASR** over a loopback
   WebSocket, and **TTS plays in the same audio context as the AEC reference.**
-  Barge-in = VAD-during-playback → cancel + duck. **ASR is local, so always-on
+  Barge-in = *sustained* talk-over during playback → hush her voice (the
+  generation isn't cancelled; replies queue and drain — see `voice-handoff.md`).
+  **ASR is local, so always-on
   audio never leaves the device.** AEC quality must be validated *per-webview*
   (CoreAudio / WebKitGTK / WebView2).
 

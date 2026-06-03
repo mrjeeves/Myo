@@ -18,7 +18,7 @@ spoken turn needs only Myo + its bundled MyOwnLLM.
 | Layer | Crate / dir | Role |
 |---|---|---|
 | **Agent core** | [`crates/myo-core`](../crates/myo-core) | Tauri-free, fully unit-tested. The **native brain** (`llm.rs`: MyOwnLLM chat SSE → normalized [`MyoEvent`](../crates/myo-core/src/event.rs) stream), the **converse** round-trip (`converse.rs`: ASR → brain → TTS), the **ASR**/**TTS** clients (`asr.rs`/`tts.rs` — the engine's `/v1/audio/*` routes), the **capability** mapping (the 4 toggles), and the engine **supervision specs**. |
-| **Shell binary** | [`src-tauri`](../src-tauri) | The Core API `#[tauri::command]`s, the OS-facing **engine supervisor** (spawn + health-poll + kill-on-Drop), the in-process turn/history state ([`state.rs`](../src-tauri/src/state.rs) — persona + context), and the `myo://` event bridge to the WebView. |
+| **Shell binary** | [`src-tauri`](../src-tauri) | The Core API `#[tauri::command]`s, the OS-facing **engine supervisor** (spawn + health-poll + kill-on-Drop), the in-process turn state + layered memory ([`state.rs`](../src-tauri/src/state.rs) — persona + context), and the `myo://` event bridge to the WebView. |
 | **Dissolved UI** | [`src`](../src) | The Svelte 5 surfaces — Presence, Conversation, Activity, DocumentArtifact, Control, Memory — driven by one reactive store ([`src/lib/stage.svelte.ts`](../src/lib/stage.svelte.ts)) that folds the `myo://` stream into state. |
 
 Both `myo-core` and `myo-self-update` are deliberately Tauri-agnostic, so the
@@ -34,7 +34,7 @@ Tauri commands the frontend invokes ([`src-tauri/src/core_api.rs`](../src-tauri/
 | `myo_asr_stream_url` → `ws://…/v1/audio/stream` | the engine's **live dictation** WebSocket (the streaming voice path connects here) |
 | `myo_converse_say{text}` → `turnId` | the **text path**: native brain answer (streamed) → voice. Also how the streaming voice path runs a finalized utterance. |
 | `myo_converse_feed_audio{audio,mime}` → `turnId?` | the **clip voice path** (fallback): base64 WAV → MyOwnLLM transcription → turn (`null` = silence/empty) |
-| `myo_converse_cancel{turn}` | barge-in / stop an in-flight turn |
+| `myo_converse_cancel{turn}` | explicit **hard-stop** of an in-flight turn (force-stop / teardown). The conversational flow never cancels — replies generate one at a time (a draining accumulator) and talking over Myo only hushes her voice (frontend); see [`voice-handoff.md`](voice-handoff.md). |
 | `myo_converse_feed_wav{path}` → `turnId?` | WAV-**file** bypass (CI / "transcribe this file") → turn |
 | `myo_capabilities_get` / `myo_capabilities_set{caps}` | the four Web/Files/Code/Reach-out toggles |
 | `myo_converse_incognito{on}` | pause memory (privacy) |

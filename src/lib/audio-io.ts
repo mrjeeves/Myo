@@ -24,11 +24,18 @@ export type VoiceState = "idle" | "speaking";
 export class Voice {
   private audio: HTMLAudioElement | null = null;
   private speaking = false;
+  // Resolver for the clip currently playing. `stop()` calls it so an interrupted
+  // clip still settles its awaiter — pausing an <audio> fires neither `ended`
+  // nor `error`, so without this a barge-in (or the next queued reply) would
+  // hang forever waiting on a clip that was cut short.
+  private endCurrent: (() => void) | null = null;
 
   /** Notified whenever playback starts or stops. */
   onStateChange?: (state: VoiceState) => void;
 
-  /** Play base64-encoded audio synthesized by the brain. Resolves when done. */
+  /** Play base64-encoded audio synthesized by the brain. Resolves when the clip
+   *  finishes — *or* when `stop()` interrupts it — so a caller can voice replies
+   *  one after another simply by awaiting each in turn. */
   async playBase64(b64: string, mime: string): Promise<void> {
     this.stop();
     const audio = new Audio(`data:${mime};base64,${b64}`);
@@ -37,12 +44,14 @@ export class Voice {
     try {
       await audio.play();
       await new Promise<void>((resolve) => {
+        this.endCurrent = resolve;
         audio.onended = () => resolve();
         audio.onerror = () => resolve();
       });
     } catch {
       // Autoplay can be blocked until the user interacts; not fatal.
     } finally {
+      this.endCurrent = null;
       if (this.audio === audio) {
         this.audio = null;
         this.setSpeaking(false);
@@ -50,24 +59,41 @@ export class Voice {
     }
   }
 
-  /** Voice text with the browser's speech engine (the WebSpeech fallback). */
-  speak(text: string): void {
+  /** Voice text with the browser's speech engine (the WebSpeech fallback).
+   *  Resolves on end / error / interruption, mirroring [`playBase64`] so either
+   *  voice path can be queued and awaited the same way. */
+  speakAsync(text: string): Promise<void> {
     this.stop();
-    if (!("speechSynthesis" in window)) return;
-    const u = new SpeechSynthesisUtterance(text);
-    u.onend = () => this.setSpeaking(false);
-    u.onerror = () => this.setSpeaking(false);
-    this.setSpeaking(true);
-    window.speechSynthesis.speak(u);
+    return new Promise<void>((resolve) => {
+      if (!("speechSynthesis" in window)) {
+        resolve();
+        return;
+      }
+      this.endCurrent = resolve;
+      const u = new SpeechSynthesisUtterance(text);
+      const done = () => {
+        if (this.endCurrent === resolve) this.endCurrent = null;
+        this.setSpeaking(false);
+        resolve();
+      };
+      u.onend = done;
+      u.onerror = done;
+      this.setSpeaking(true);
+      window.speechSynthesis.speak(u);
+    });
   }
 
-  /** Stop whatever is playing — for barge-in or an explicit stop. */
+  /** Stop whatever is playing — for barge-in or an explicit stop. Resolves the
+   *  in-flight playback promise too, so a queued/awaiting caller doesn't hang. */
   stop(): void {
     if (this.audio) {
       this.audio.pause();
       this.audio = null;
     }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    const end = this.endCurrent;
+    this.endCurrent = null;
+    end?.();
     this.setSpeaking(false);
   }
 
