@@ -22,10 +22,12 @@
 //! engine client lives), so this module stays small and unit-testable.
 
 pub mod dream;
+pub mod ingest;
 mod store;
 mod working;
 
 pub use dream::{DreamConfig, StepOutcome};
+pub use ingest::ingest_turn;
 pub use store::{ConsolidationCluster, LongTermMemory, MemoryHit, MemoryRecord};
 pub use working::WorkingMemory;
 
@@ -101,6 +103,12 @@ impl Memory {
     /// Recall the memories most relevant to `query_embedding`.
     pub fn recall(&self, query_embedding: &[f32], k: usize, min_score: f32) -> Vec<MemoryHit> {
         self.long_term.recall(query_embedding, k, min_score)
+    }
+
+    /// Highest similarity of any stored memory to `embedding` — for dedup before
+    /// an automatic write (pure, no salience bump).
+    pub fn max_similarity(&self, embedding: &[f32]) -> f32 {
+        self.long_term.max_similarity(embedding)
     }
 
     /// List durable memories (optionally filtered by a text query) — the Memory

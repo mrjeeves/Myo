@@ -37,8 +37,9 @@ share as a **hive**.
 > (MyOwnLLM ASR) → Myo's **native** agent answer (streamed) → **native TTS**
 > (MyOwnLLM's hardware-tiered Kokoro/Piper voice, WebSpeech fallback), with
 > barge-in — all rendered as a **dissolved UI**: streamed answers, a live tool
-> feed, editable document artifacts, the four capability toggles, and a memory
-> surface you can review and forget. The direction + roadmap live in
+> feed (real **shell**, **files**, and **web search**), editable document
+> artifacts, the four capability toggles, and **memory** that recalls across days
+> and quietly **consolidates itself while you're away**. The direction + roadmap live in
 > **[`docs/native-agent.md`](docs/native-agent.md)**; what's wired right now is in
 > **[`docs/shell.md`](docs/shell.md)**. ⭐ Star it to watch a companion grow up.
 
@@ -48,7 +49,7 @@ share as a **hive**.
 - 🔒 **Local-first** — on-device by design. Always-on audio and memory never leave your machine.
 - 🧠 **Myo *is* the agent** — the brain, memory, and tools are native Rust; MyOwnLLM provides inference, ASR, and voice. No Python brain sidecar to babysit.
 - 🪟 **Dissolved UI** — surfaces *materialize* from what the agent is doing, instead of you steering fixed screens.
-- 🧵 **A continuous presence** — one ongoing relationship that remembers across days, with memory you can see, pause, and forget.
+- 🧵 **A continuous presence** — one ongoing relationship that remembers across days and **consolidates aging memories during downtime** (Dream mode), with memory you can see, pause, and forget.
 - 🐝 **Hive-ready** — each install is a self-contained mini-myo; installs network over a local mesh and share as a hive (coming).
 - ♻️ **Set-it-and-forget-it updates** — checks, **SHA-256-verifies**, stages, and applies on next launch. No installers to babysit. → [how it works](docs/auto-update.md)
 
@@ -123,7 +124,7 @@ A Cargo workspace + Svelte 5 frontend:
 
 | Path | What it is |
 |---|---|
-| [`crates/myo-core`](crates/myo-core) | The agent core — Myo's **native brain** (`llm.rs`: streams MyOwnLLM chat → a normalized `myo://` intent stream), the converse round-trip (ASR → brain → TTS), capability mapping, and engine-supervision specs. Tauri-agnostic, fully unit-tested. |
+| [`crates/myo-core`](crates/myo-core) | The agent core — Myo's **native brain** (`llm.rs`: streams MyOwnLLM chat → a normalized `myo://` intent stream), the memory-aware **converse loop** with a **native tool loop** (`shell`/files/web search + `remember`/`recall`), the **two-layer memory** + **Dream-mode** consolidation (`memory/`), capability mapping, and engine-supervision specs. Tauri-agnostic, fully unit-tested. |
 | [`crates/myo-self-update`](crates/myo-self-update) | The self-updater — release feed, SHA-256 verify, atomic swap, background watcher. Tauri-agnostic, fully unit-tested. |
 | [`src-tauri`](src-tauri) | The `myo` binary — CLI **and** desktop shell (Tauri 2): the Core API commands, the engine supervisor, and the `myo://` event bridge. |
 | [`src`](src) | Svelte 5 frontend — the dissolved-UI surfaces (Presence, Conversation, Activity, DocumentArtifact, Control, Memory) wired to the Core API in [`src/lib`](src/lib). |
@@ -136,13 +137,15 @@ The foundations are down; the companion is real and growing.
 - [x] Self-update engine + `myo update` CLI + background watcher
 - [x] Desktop shell (Tauri 2 + Svelte 5) + Settings → Updates panel
 - [x] 5-target release pipeline + one-line installers
-- [x] 🧠 **Native agent brain** — `crates/myo-core` (`llm.rs`): streams MyOwnLLM chat into the `myo://` intent protocol; persona + running history. No Odysseus.
+- [x] 🧠 **Native agent brain** — `crates/myo-core` (`llm.rs`): streams MyOwnLLM chat into the `myo://` intent protocol; persona + memory-backed context. No Odysseus.
 - [x] 🪟 **Dissolved-UI surface renderer** — streamed answers, live tool feed, editable document artifacts, agent-driven panels
 - [x] 🎛️ **Capability + Memory surfaces** — the four Web/Files/Code/Reach-out toggles, plus review/forget/incognito
-- [x] 🗣️ **Conversation spine** — brain→voice round-trip (**native TTS** via MyOwnLLM `/v1/audio/speech`, WebSpeech fallback) with barge-in/cancel
+- [x] 🗣️ **Conversation spine** — brain→voice round-trip (**native TTS** via MyOwnLLM `/v1/audio/speech`, WebSpeech fallback), single-flight turn flow
 - [x] 👂 **Open-mic voice input** — streaming dictation + clip fallback (MyOwnLLM ASR), full-duplex
-- [ ] 🧠 **Native memory store** — local SQLite + embeddings recall (Slice 2)
-- [ ] 🧰 **Native tool loop** — Web/Files/Code/Reach-out actions behind the toggles (Slice 4)
+- [x] 🧠 **Native memory** — working (recent conversation) + durable long-term store (SQLite + embeddings recall), woven into every turn; review / forget / incognito (Slice 2)
+- [x] 💤 **Dream mode** — during downtime, aging memories calcify into progressively denser tiers and deep/unused ones are forgotten, so a 24/7 companion's memory never overloads
+- [x] 🧰 **Native tool loop** — `shell`, file read/write, and keyless **web search** behind the toggles, with live streaming + parallel calls (Slice 4); plus `remember`/`recall`
+- [ ] 📨 **Reach-out + deep research** — email/calendar actions and a multi-step research tool (the next tools)
 - [ ] ✋ Fine-grained per-action approval
 - [ ] 🐝 **Hive** — multi-device over a local mesh (Slice 5)
 - [ ] 📱 **iOS & Android** (mobile targets — coming)
