@@ -11,7 +11,6 @@
 //! the Odysseus client used drives it; we just read `choices[].delta.content`
 //! and emit the identical [`MyoEvent`] stream the UI already renders.
 
-use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -36,8 +35,11 @@ like a robot reading a wall of text. Leave out whatever the ear can't hear — n
 markdown, headings, bullet or numbered lists, code blocks, emoji, or \
 spelled-out URLs; if you wouldn't say it out loud, don't write it. Keep replies \
 short and easy to follow by ear, going deeper only when you're asked. You're \
-always listening, you remember across conversations, and when you're unsure you \
-say so plainly.";
+always listening, and you genuinely remember across conversations: when someone \
+tells you something worth keeping — a preference, a detail about their life, the \
+people and projects they care about — hold onto it, and let it shape how you show \
+up next time, drawing on it naturally rather than announcing that you saved it. \
+When you're unsure, you say so plainly.";
 
 /// The virtual model ID MyOwnLLM serves embeddings under. Resolving it is the
 /// engine's job: per device it maps to the hardware-appropriate Ollama
@@ -45,6 +47,15 @@ say so plainly.";
 /// pulled + warm because it's a tracked mode. Myo's memory system names this
 /// stable id and never has to know the underlying tag.
 pub const EMBED_MODEL: &str = "myownllm-embed";
+
+/// The chat model Myo pins for the live conversational loop. MyOwnLLM serves a
+/// hardware-tiered default, but a voice companion lives or dies on latency, so
+/// Myo deliberately asks for the small, fast Gemma 4 `e2b` build on every
+/// machine — even a big GPU — trading a little quality for near-real-time
+/// replies (and leaving the engine room to keep other models resident). The
+/// engine pulls it on demand and bare tags pass straight through its resolver.
+/// A deliberate pin "for now"; revisit once parallel model streams land.
+pub const MYO_CHAT_MODEL: &str = "gemma4:e2b";
 
 /// One message in the OpenAI `messages` array.
 ///
@@ -159,8 +170,6 @@ pub enum TurnOutcome {
 pub struct LlmClient {
     http: Client,
     base_url: String,
-    /// The resolved model id, cached after the first `/v1/models` lookup.
-    model: Mutex<Option<String>>,
 }
 
 impl LlmClient {
@@ -172,40 +181,21 @@ impl LlmClient {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Self {
-            http,
-            base_url,
-            model: Mutex::new(None),
-        })
+        Ok(Self { http, base_url })
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
 
-    /// Resolve (and cache) a model id from `/v1/models`. MyOwnLLM owns model
-    /// *selection* per device, so Myo just uses whatever it's serving.
+    /// The chat model Myo asks the engine for. Pinned to [`MYO_CHAT_MODEL`]
+    /// rather than read from `/v1/models`: Myo deliberately overrides the
+    /// engine's hardware-tiered default to keep the conversational loop on the
+    /// small, fast build (see the constant). Bare tags resolve straight through
+    /// MyOwnLLM, and the `X-MyOwnLLM-Wait` header on each call lets the engine
+    /// pull it on first use instead of bouncing the request.
     async fn model(&self) -> Result<String> {
-        if let Some(m) = self.model.lock().unwrap().clone() {
-            return Ok(m);
-        }
-        let v: Value = self
-            .http
-            .get(self.url("/v1/models"))
-            .send()
-            .await?
-            .json()
-            .await?;
-        let id = v
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|a| a.first())
-            .and_then(|m| m.get("id"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("the model engine has no model available yet"))?
-            .to_string();
-        *self.model.lock().unwrap() = Some(id.clone());
-        Ok(id)
+        Ok(MYO_CHAT_MODEL.to_string())
     }
 
     /// Stream a chat completion: emit one [`MyoEvent::AssistantDelta`] per token,
@@ -263,6 +253,7 @@ impl LlmClient {
         let resp = self
             .http
             .post(self.url("/v1/chat/completions"))
+            .header("X-MyOwnLLM-Wait", "true")
             .json(&body)
             .send()
             .await?;
@@ -298,6 +289,7 @@ impl LlmClient {
         let mut resp = self
             .http
             .post(self.url("/v1/chat/completions"))
+            .header("X-MyOwnLLM-Wait", "true")
             .json(&body)
             .send()
             .await?;
@@ -355,6 +347,7 @@ impl LlmClient {
         let mut resp = self
             .http
             .post(self.url("/v1/chat/completions"))
+            .header("X-MyOwnLLM-Wait", "true")
             .json(&body)
             .send()
             .await?;
@@ -812,39 +805,9 @@ mod tests {
         assert_eq!(calls[0].id, "call_2");
     }
 
-    /// Loopback server that answers two sequential requests (each its own
-    /// connection, since we send `Connection: close`): first the `/v1/models`
-    /// lookup, then the chat stream. Lets `chat_stream_tools` run end-to-end.
-    async fn serve_models_then(stream_body: &'static str) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            // 1) /v1/models
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 8192];
-            let _ = sock.read(&mut buf).await;
-            let models = "{\"data\":[{\"id\":\"m\"}]}";
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{models}",
-                models.len()
-            );
-            sock.write_all(resp.as_bytes()).await.unwrap();
-            let _ = sock.flush().await;
-            // 2) /v1/chat/completions (streamed)
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let _ = sock.read(&mut buf).await;
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{stream_body}"
-            );
-            sock.write_all(resp.as_bytes()).await.unwrap();
-            let _ = sock.flush().await;
-        });
-        format!("http://{addr}")
-    }
-
     #[tokio::test]
     async fn chat_stream_tools_returns_tool_calls() {
-        let base = serve_models_then(
+        let base = serve_once(
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]}}]}\n\n\
              data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
              data: [DONE]\n\n",
@@ -875,7 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_stream_tools_returns_final_message() {
-        let base = serve_models_then(
+        let base = serve_once(
             "data: {\"choices\":[{\"delta\":{\"content\":\"All \"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"content\":\"done.\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
