@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="assets/logo.png" alt="Myo" width="132" height="132" />
+<img src="assets/logo.png" alt="Myo" width="120" height="120" />
 
 # Myo
 
-### Your own AI — not an app with an AI inside it.
+**Your own AI — not an app with an AI inside it.**
 
-**Voice-first** · **local-first** · and it **keeps itself up to date**.
+Voice-first, local-first, and it keeps itself up to date.
 
 [![CI](https://github.com/mrjeeves/Myo/actions/workflows/ci.yml/badge.svg)](https://github.com/mrjeeves/Myo/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -18,45 +18,35 @@
 
 ---
 
-Myo is a local AI companion you **talk to**. It runs entirely on your machine
-and lets the interface **dissolve into the conversation**: you mostly just talk
-and watch it work. Your voice, your memory, your files — nothing leaves the
-device.
+Myo is an AI companion you **talk to**. Open-mic voice in, a streamed spoken
+answer back, and a UI that gets out of the way — surfaces appear from what the
+agent is doing instead of screens you steer. Your voice, your memory, and your
+files never leave the device.
 
-**Myo *is* the agent.** The brain (its agent loop + persona), memory, the tool
-loop, and the voice are built **natively** into Myo (Rust). For the heavy
-lifting it shouldn't reinvent, it runs one local service —
-**[MyOwnLLM](https://github.com/mrjeeves/MyOwnLLM)** — for per-device model
-selection, LLM inference, and speech (ASR + TTS), reached over loopback HTTP
-(`/v1/chat/completions`, `/v1/embeddings`, `/v1/audio/*`). Each install is a
-self-contained **mini-myo**; installs find each other over a local mesh and
-share as a **hive**.
+**Myo is the agent.** Its agent loop, persona, memory, and tools are built
+natively in Rust. For the work it shouldn't reinvent — per-device model
+selection, inference, and speech — it runs one local service,
+[MyOwnLLM](https://github.com/mrjeeves/MyOwnLLM), over loopback HTTP. No Python
+brain to babysit, and nothing in the cloud.
 
-> 🌱 **Status: early, but real — and it talks back.** A full spoken turn already
-> runs end-to-end with **no brain sidecar**: open-mic **streaming dictation**
-> (MyOwnLLM ASR) → Myo's **native** agent answer (streamed) → **native TTS**
-> (MyOwnLLM's hardware-tiered Kokoro/Piper voice, WebSpeech fallback), with
-> barge-in — all rendered as a **dissolved UI**: streamed answers, a live tool
-> feed (real **shell**, **files**, and **web search**), editable document
-> artifacts, the four capability toggles, and **memory** that recalls across days
-> and quietly **consolidates itself while you're away**. The direction + roadmap live in
-> **[`docs/native-agent.md`](docs/native-agent.md)**; what's wired right now is in
-> **[`docs/shell.md`](docs/shell.md)**. ⭐ Star it to watch a companion grow up.
+> **Status: early, but real.** A full spoken turn already runs end to end:
+> streaming dictation → a native, tool-using answer → native voice, with
+> barge-in and memory that carries across days. See the [roadmap](#roadmap).
 
-## ✨ Why Myo
+## Features
 
-- 🗣️ **Voice-first** — talk, and interrupt by talking. Touch and type are there when you want them, never in the way.
-- 🔒 **Local-first** — on-device by design. Always-on audio and memory never leave your machine.
-- 🧠 **Myo *is* the agent** — the brain, memory, and tools are native Rust; MyOwnLLM provides inference, ASR, and voice. No Python brain sidecar to babysit.
-- 🪟 **Dissolved UI** — surfaces *materialize* from what the agent is doing, instead of you steering fixed screens.
-- 🧵 **A continuous presence** — one ongoing relationship that remembers across days and **consolidates aging memories during downtime** (Dream mode), with memory you can see, pause, and forget.
-- 🐝 **Hive-ready** — each install is a self-contained mini-myo; installs network over a local mesh and share as a hive (coming).
-- ♻️ **Set-it-and-forget-it updates** — checks, **SHA-256-verifies**, stages, and applies on next launch. No installers to babysit. → [how it works](docs/auto-update.md)
+- **Voice-first** — talk, and interrupt by talking. Touch and type are there when you want them, never in the way.
+- **Local-first** — always-on audio, memory, and files stay on device by design.
+- **Myo is the agent** — the brain, memory, and the tool loop (`shell`, file read/write, keyless web search) are native Rust, not a sidecar to manage.
+- **Dissolved UI** — streamed answers, a live tool feed, and editable document artifacts materialize from the work itself.
+- **Memory that lasts** — a working + long-term store (SQLite + embeddings) recalled into every turn, with **Dream mode** consolidating aging memories during downtime. Review, pause, or forget any of it.
+- **Honest model progress** — the first time a model is fetched, you get a live, inline download-and-load bar instead of a frozen wait.
+- **Self-updating** — checks, SHA-256-verifies, and applies on the next launch. → [how it works](docs/auto-update.md)
 
-## 🚀 Install
+## Install
 
-> 📦 Prebuilt one-line installers land with the **first tagged release**. Until
-> then, [build from source](#%EF%B8%8F-build-from-source) — it's two commands.
+> Prebuilt one-line installers ship with the first tagged release. Until then,
+> [build from source](#build-from-source) — it's two commands.
 
 **macOS / Linux**
 
@@ -71,36 +61,44 @@ irm https://raw.githubusercontent.com/mrjeeves/Myo/main/scripts/install.ps1 | ie
 ```
 
 The installer drops a single `myo` binary on your `PATH`. After that, Myo keeps
-**itself** current — you never run the installer again.
+itself current — you never run the installer again.
 
-## 🎛️ Usage
+## Usage
 
 ```sh
 myo                 # open the desktop window
 myo update          # update now: check → download → verify → apply
 myo update status   # version, channel, install kind, pending update
-myo watch           # run the background update-checker in the foreground
 myo --version
 ```
 
-Every launch first applies any update a previous run staged — so upgrades are
-**hands-free**. Prefer to drive it yourself? `myo update`. Want it to pause?
-`myo update disable` (or set `MYO_AUTOUPDATE=0`). Installed via Homebrew / apt /
-MSI? Myo notices and steps aside for your package manager.
+Every launch first applies any update a previous run staged, so upgrades are
+hands-free. Pause it anytime with `myo update disable` (or `MYO_AUTOUPDATE=0`);
+installed via Homebrew / apt / MSI, Myo steps aside for your package manager.
 
-## ♻️ How it stays current
+## How it works
 
-A background watcher polls GitHub releases (gated to a gentle cadence), picks
-the right binary for your platform, **verifies its SHA-256**, and stages it.
-The next launch atomically swaps it in — Myo never restarts itself out from
-under you. It's a faithful port of MyOwnLLM's battle-tested updater, extracted
-into a small, reusable, fully unit-tested crate. Full design, config knobs, and
-the desktop Updates panel: **[`docs/auto-update.md`](docs/auto-update.md)**.
+A Cargo workspace plus a Svelte 5 desktop shell (Tauri 2).
 
-## 🛠️ Build from source
+- [**`crates/myo-core`**](crates/myo-core) is the agent: it streams MyOwnLLM's
+  chat completions into a normalized `myo://` event stream the UI renders, runs
+  the memory-aware converse loop and native tool loop, and owns the two-layer
+  memory plus Dream-mode consolidation. Tauri-agnostic and unit-tested.
+- The [**`myo` binary**](src-tauri) is both the CLI and the desktop shell: it
+  supervises the engine, bridges `myo://` events to the WebView, and exposes the
+  Core API the frontend calls.
+- It bundles a pinned **MyOwnLLM** engine as a sidecar and talks to it over
+  loopback (`/v1/chat/completions`, `/v1/embeddings`, `/v1/audio/*`).
 
-**Prerequisites:** [Rust](https://rustup.rs) (stable), [Node 20+](https://nodejs.org)
-with [pnpm](https://pnpm.io), and — on **Linux** — the WebKitGTK stack:
+Go deeper: [`native-agent.md`](docs/native-agent.md) (the blueprint),
+[`shell.md`](docs/shell.md) (what's wired today), and
+[`myownllm-integration.md`](docs/myownllm-integration.md) (the engine seam).
+
+## Build from source
+
+**Prerequisites:** [Rust](https://rustup.rs) (stable) and
+[Node 20+](https://nodejs.org) with [pnpm](https://pnpm.io). On **Linux**, the
+WebKitGTK stack:
 
 ```sh
 sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
@@ -113,54 +111,44 @@ cargo run -p myo             # launch the desktop window
 cargo test --workspace       # run the test suite
 ```
 
-> Myo bundles a pinned **MyOwnLLM** engine as a sidecar (`.myownllm-rev` +
-> [`src-tauri/build.rs`](src-tauri/build.rs)); in dev it picks up a built sibling
-> `../MyOwnLLM` checkout or downloads the pinned release. See
-> [`docs/shell.md`](docs/shell.md).
+Myo bundles a pinned MyOwnLLM engine (`.myownllm-rev` +
+[`src-tauri/build.rs`](src-tauri/build.rs)); in dev it picks up a sibling
+`../MyOwnLLM` checkout or downloads the pinned release.
 
-## 🧩 Layout
-
-A Cargo workspace + Svelte 5 frontend:
+## Project layout
 
 | Path | What it is |
 |---|---|
-| [`crates/myo-core`](crates/myo-core) | The agent core — Myo's **native brain** (`llm.rs`: streams MyOwnLLM chat → a normalized `myo://` intent stream), the memory-aware **converse loop** with a **native tool loop** (`shell`/files/web search + `remember`/`recall`), the **two-layer memory** + **Dream-mode** consolidation (`memory/`), capability mapping, and engine-supervision specs. Tauri-agnostic, fully unit-tested. |
-| [`crates/myo-self-update`](crates/myo-self-update) | The self-updater — release feed, SHA-256 verify, atomic swap, background watcher. Tauri-agnostic, fully unit-tested. |
-| [`src-tauri`](src-tauri) | The `myo` binary — CLI **and** desktop shell (Tauri 2): the Core API commands, the engine supervisor, and the `myo://` event bridge. |
-| [`src`](src) | Svelte 5 frontend — the dissolved-UI surfaces (Presence, Conversation, Activity, DocumentArtifact, Control, Memory) wired to the Core API in [`src/lib`](src/lib). |
-| [`docs`](docs) | The direction ([`native-agent.md`](docs/native-agent.md)), the decisions, what's-wired-today ([`shell.md`](docs/shell.md)), and the engine-integration references. |
+| [`crates/myo-core`](crates/myo-core) | The agent core — native brain, memory, the converse + tool loops, Dream-mode consolidation, and engine-supervision specs. Tauri-agnostic, unit-tested. |
+| [`crates/myo-self-update`](crates/myo-self-update) | The self-updater — release feed, SHA-256 verify, atomic swap, background watcher. Tauri-agnostic, unit-tested. |
+| [`src-tauri`](src-tauri) | The `myo` binary — CLI and desktop shell (Tauri 2): Core API commands, engine supervisor, and the `myo://` event bridge. |
+| [`src`](src) | Svelte 5 frontend — the dissolved-UI surfaces wired to the Core API in [`src/lib`](src/lib). |
+| [`docs`](docs) | The direction, the decisions, what's wired today, and the engine-integration references. |
 
-## 🗺️ Roadmap
+## Roadmap
 
 The foundations are down; the companion is real and growing.
 
+- [x] Native agent brain — streams MyOwnLLM chat into the `myo://` protocol, persona + memory-backed context
+- [x] Dissolved-UI renderer — streamed answers, live tool feed, editable document artifacts
+- [x] Conversation spine — open-mic streaming dictation, native TTS (WebSpeech fallback), barge-in
+- [x] Native memory — working + long-term recall, review / forget / incognito, Dream-mode consolidation
+- [x] Native tool loop — `shell`, file read/write, keyless web search, plus `remember` / `recall`
 - [x] Self-update engine + `myo update` CLI + background watcher
-- [x] Desktop shell (Tauri 2 + Svelte 5) + Settings → Updates panel
-- [x] 5-target release pipeline + one-line installers
-- [x] 🧠 **Native agent brain** — `crates/myo-core` (`llm.rs`): streams MyOwnLLM chat into the `myo://` intent protocol; persona + memory-backed context. No Odysseus.
-- [x] 🪟 **Dissolved-UI surface renderer** — streamed answers, live tool feed, editable document artifacts, agent-driven panels
-- [x] 🎛️ **Capability + Memory surfaces** — the four Web/Files/Code/Reach-out toggles, plus review/forget/incognito
-- [x] 🗣️ **Conversation spine** — brain→voice round-trip (**native TTS** via MyOwnLLM `/v1/audio/speech`, WebSpeech fallback), single-flight turn flow
-- [x] 👂 **Open-mic voice input** — streaming dictation + clip fallback (MyOwnLLM ASR), full-duplex
-- [x] 🧠 **Native memory** — working (recent conversation) + durable long-term store (SQLite + embeddings recall), woven into every turn; review / forget / incognito (Slice 2)
-- [x] 💤 **Dream mode** — during downtime, aging memories calcify into progressively denser tiers and deep/unused ones are forgotten, so a 24/7 companion's memory never overloads
-- [x] 🧰 **Native tool loop** — `shell`, file read/write, and keyless **web search** behind the toggles, with live streaming + parallel calls (Slice 4); plus `remember`/`recall`
-- [ ] 📨 **Reach-out + deep research** — email/calendar actions and a multi-step research tool (the next tools)
-- [ ] ✋ Fine-grained per-action approval
-- [ ] 🐝 **Hive** — multi-device over a local mesh (Slice 5)
-- [ ] 📱 **iOS & Android** (mobile targets — coming)
+- [ ] Reach-out + deep research — email/calendar actions and a multi-step research tool
+- [ ] Fine-grained, per-action approval
+- [ ] Hive — multiple installs over a local mesh
+- [ ] iOS & Android
 
-See **[`docs/native-agent.md`](docs/native-agent.md)** for the blueprint and
-**[`docs/decisions-and-rationale.md`](docs/decisions-and-rationale.md)** for the *why*.
+See [`native-agent.md`](docs/native-agent.md) for the blueprint and
+[`decisions-and-rationale.md`](docs/decisions-and-rationale.md) for the *why*.
 
-## 🤝 Contributing
+## Contributing
 
-PRs and ideas welcome — start with **[CONTRIBUTING.md](CONTRIBUTING.md)**. Please
-keep it kind: we follow a **[Code of Conduct](CODE_OF_CONDUCT.md)**. Found a
-security issue? See **[SECURITY.md](SECURITY.md)**.
+PRs and ideas are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md). We
+follow a [Code of Conduct](CODE_OF_CONDUCT.md), and security reports go through
+[SECURITY.md](SECURITY.md).
 
-## 📄 License
+## License
 
 [MIT](LICENSE) © Myo contributors.
-
-<div align="center"><sub>Built to be <em>yours</em> — it listens, it remembers, and it grows up with you. 🎙️</sub></div>

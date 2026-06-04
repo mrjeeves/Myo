@@ -36,6 +36,7 @@ pub mod event;
 pub mod llm;
 pub mod memory;
 pub mod paths;
+pub mod progress;
 pub mod supervisor;
 pub mod tools;
 pub mod tts;

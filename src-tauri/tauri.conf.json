@@ -30,7 +30,11 @@
     "active": true,
     "targets": "all",
     "externalBin": [
-      "binaries/myownllm"
+      "binaries/myownllm",
+      "binaries/espeak-ng"
+    ],
+    "resources": [
+      "binaries/espeak-ng-data"
     ],
     "icon": [
       "icons/32x32.png",

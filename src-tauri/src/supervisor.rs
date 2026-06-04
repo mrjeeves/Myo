@@ -77,6 +77,17 @@ pub async fn ensure_ready(app: AppHandle, state: Arc<MyoState>) {
     }
 }
 
+/// Spawn the inline force-load progress poller: watch the model engine's
+/// `/v1/myownllm/progress` and re-emit it on `myo://progress` so the WebView
+/// can draw a real bar while a model downloads or loads into memory. Runs for
+/// the app's lifetime — harmless before the engine is up (it sees nothing) and
+/// on an engine too old for the route (404 → nothing) — so it's fire-and-forget.
+pub fn spawn_progress_poller(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        myo_core::progress::run_loop(specs::myownllm_base_url(), move |ev| emit(&app, ev)).await;
+    });
+}
+
 async fn start_odysseus(app: &AppHandle, state: &Arc<MyoState>) {
     emit(app, engine("odysseus", "checking", None));
     if state.brain.health().await.unwrap_or(false) {

@@ -15,6 +15,7 @@ import {
   type Capabilities,
   type EngineEvent,
   type EnginesStatus,
+  type ModelLoadEntry,
   type ProgressEvent,
   type TranscriptEvent,
   type TurnId,
@@ -116,6 +117,9 @@ class MyoStore {
   liveTranscript = $state("");
   // Transient engine subtitle from the ASR stream ("Loading model…", etc.).
   asrStatus = $state("");
+  // Models the engine is downloading/loading right now (force-load progress).
+  // Drives the inline progress bar; empty when nothing is being acquired.
+  modelLoads = $state<ModelLoadEntry[]>([]);
   turns = $state<Turn[]>([]);
 
   // Document artifacts (the focal "stage" surface) + recall history
@@ -742,6 +746,14 @@ class MyoStore {
   }
 
   private onProgress(e: ProgressEvent) {
+    // Engine-level force-load progress (sentinel turn 0): drives the inline
+    // download/load bar. Handled before `turnById` so it never spawns a phantom
+    // turn for the sentinel id.
+    if (e.kind === "model_load") {
+      const data = e.data as { active?: ModelLoadEntry[] } | null;
+      this.modelLoads = Array.isArray(data?.active) ? data.active : [];
+      return;
+    }
     const t = this.turnById(e.turn);
     if (e.kind === "thinking") {
       const text = (e.data as { text?: string })?.text ?? "";
