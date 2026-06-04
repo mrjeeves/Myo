@@ -33,15 +33,35 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    // Bundle the sidecar BEFORE tauri_build so its `externalBin` validation in
-    // tauri.conf.json sees the produced file.
-    if let Err(e) = bundle_myownllm_sidecar() {
-        println!(
-            "cargo:warning=myownllm sidecar bundle failed: {e:#} — continuing without a \
-             bundled engine; runtime falls back to MYO_MYOWNLLM_BIN / PATH discovery"
-        );
-        if let Err(stub_err) = write_sidecar_stub() {
-            println!("cargo:warning=could not write sidecar stub: {stub_err:#}");
+    // Bundle the engine sidecar BEFORE tauri_build so its `externalBin` /
+    // `resources` validation in tauri.conf.json sees the produced files. The
+    // engine's owned espeak-ng phonemizer (binary + espeak-ng-data) rides along
+    // from the same source — the portable engine archive carries it (see
+    // MyOwnLLM release.yml), as does a sibling checkout's `binaries/` — so a
+    // bundled Myo ships a working voice instead of degrading to WebSpeech.
+    match bundle_myownllm_sidecar() {
+        Ok(espeak_src) => {
+            if let Err(e) = bundle_espeak_sidecar(espeak_src.as_deref()) {
+                println!(
+                    "cargo:warning=espeak-ng bundle skipped/failed: {e:#} — a released Myo would \
+                     degrade to WebSpeech; dev falls back to a system espeak-ng"
+                );
+                if let Err(stub_err) = write_espeak_stub() {
+                    println!("cargo:warning=could not write espeak stub: {stub_err:#}");
+                }
+            }
+        }
+        Err(e) => {
+            println!(
+                "cargo:warning=myownllm sidecar bundle failed: {e:#} — continuing without a \
+                 bundled engine; runtime falls back to MYO_MYOWNLLM_BIN / PATH discovery"
+            );
+            if let Err(stub_err) = write_sidecar_stub() {
+                println!("cargo:warning=could not write sidecar stub: {stub_err:#}");
+            }
+            if let Err(stub_err) = write_espeak_stub() {
+                println!("cargo:warning=could not write espeak stub: {stub_err:#}");
+            }
         }
     }
 
@@ -84,7 +104,128 @@ fn write_sidecar_stub() -> std::io::Result<()> {
     Ok(())
 }
 
-fn bundle_myownllm_sidecar() -> Result<(), Box<dyn std::error::Error>> {
+/// Stage the engine's espeak-ng (binary + `espeak-ng-data`) into `binaries/`
+/// next to the bundled engine, from `src_dir` (where the engine came from).
+/// Idempotent: a freshly-staged espeak is left alone. A `None` source means the
+/// engine came from somewhere with no espeak to offer → the caller stubs it.
+fn bundle_espeak_sidecar(src_dir: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    let target_triple = env::var("TARGET").unwrap_or_else(|_| "unknown".into());
+    let exe_suffix = if target_triple.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let bin_dir = crate_dir.join("binaries");
+    fs::create_dir_all(&bin_dir)?;
+
+    if espeak_staged(&bin_dir, &target_triple, exe_suffix) {
+        return Ok(());
+    }
+    let src = src_dir.ok_or("engine source carries no espeak-ng (e.g. a bare-binary override)")?;
+    stage_espeak(src, &bin_dir, &target_triple, exe_suffix)
+}
+
+/// Copy `espeak-ng[.exe]` (portable archive) or `espeak-ng-<triple>[.exe]`
+/// (sibling `binaries/`) plus `espeak-ng-data/` from `src` into `bin_dir`, named
+/// for this triple so Tauri ships them as `binaries/espeak-ng` (externalBin) +
+/// `binaries/espeak-ng-data` (resource).
+fn stage_espeak(
+    src: &Path,
+    bin_dir: &Path,
+    triple: &str,
+    sfx: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bin_src = [
+        src.join(format!("espeak-ng{sfx}")),
+        src.join(format!("espeak-ng-{triple}{sfx}")),
+    ]
+    .into_iter()
+    .find(|p| {
+        p.metadata()
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false)
+    })
+    .ok_or_else(|| format!("no espeak-ng binary under {}", src.display()))?;
+    let data_src = src.join("espeak-ng-data");
+    if !data_src.join("phontab").is_file() {
+        return Err(format!("no usable espeak-ng-data under {}", src.display()).into());
+    }
+    let bin_dst = bin_dir.join(format!("espeak-ng-{triple}{sfx}"));
+    write_sidecar_with_retry(&bin_src, &bin_dst)?;
+    make_executable(&bin_dst)?;
+    let data_dst = bin_dir.join("espeak-ng-data");
+    let _ = fs::remove_dir_all(&data_dst);
+    copy_dir_all(&data_src, &data_dst)?;
+    println!(
+        "cargo:warning=[espeak] staged {} + espeak-ng-data",
+        bin_dst.display()
+    );
+    Ok(())
+}
+
+/// True when a real (non-stub) espeak-ng binary + `espeak-ng-data` are already
+/// staged for this triple.
+fn espeak_staged(bin_dir: &Path, triple: &str, sfx: &str) -> bool {
+    let bin_ok = bin_dir
+        .join(format!("espeak-ng-{triple}{sfx}"))
+        .metadata()
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false);
+    let data_ok = bin_dir.join("espeak-ng-data").join("phontab").is_file();
+    bin_ok && data_ok
+}
+
+/// Zero-byte espeak binary + a placeholder `espeak-ng-data/` so `tauri_build`'s
+/// `externalBin` / `resources` existence checks pass when no real espeak was
+/// staged (offline build / bare-binary override). The runtime then leans on the
+/// engine's own bundled espeak (sibling dev) or its system fallback.
+fn write_espeak_stub() -> std::io::Result<()> {
+    let target_triple = env::var("TARGET").unwrap_or_else(|_| "unknown".into());
+    let exe_suffix = if target_triple.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let bin_dir = crate_dir.join("binaries");
+    fs::create_dir_all(&bin_dir)?;
+    let bin = bin_dir.join(format!("espeak-ng-{target_triple}{exe_suffix}"));
+    if !bin.exists() {
+        fs::write(&bin, b"")?;
+        make_executable(&bin).ok();
+    }
+    let data = bin_dir.join("espeak-ng-data");
+    fs::create_dir_all(&data)?;
+    let marker = data.join(".espeak-stub");
+    if !marker.exists() {
+        fs::write(&marker, b"espeak-ng-data not bundled (stub build)\n")?;
+    }
+    Ok(())
+}
+
+/// Recursively copy `src` into `dst` (std has no dir-copy). espeak-ng-data is a
+/// few MB of phoneme tables, so a simple recursive copy is fine.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Stage the pinned `myownllm` engine sidecar. Returns the directory to look in
+/// for the engine's espeak-ng payload (the release staging dir, a sibling's
+/// `src-tauri/binaries`, or an override binary's parent) so `main` can stage it
+/// alongside — or `None` when the source has no espeak to offer.
+fn bundle_myownllm_sidecar() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let target_triple = env::var("TARGET").unwrap_or_else(|_| "unknown".into());
     // The runtime uses this to look for `myownllm-<triple>{.exe}` (dev staging,
     // where Tauri keeps the suffix) and `myownllm{.exe}` (production bundle,
@@ -126,8 +267,11 @@ fn bundle_myownllm_sidecar() -> Result<(), Box<dyn std::error::Error>> {
             let p = PathBuf::from(p);
             println!("cargo:rerun-if-changed={}", p.display());
             if p.exists() {
+                // espeak may sit next to an override binary (e.g. a staged
+                // engine dir); if not, `bundle_espeak_sidecar` stubs it.
+                let espeak_src = p.parent().map(Path::to_path_buf);
                 if up_to_date(&p, &sidecar_path) {
-                    return Ok(());
+                    return Ok(espeak_src);
                 }
                 println!(
                     "cargo:warning=bundling myownllm from {} (via {var})",
@@ -138,7 +282,7 @@ fn bundle_myownllm_sidecar() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(want) = &want_rev {
                     fs::write(&bundled_rev_sentinel, want)?;
                 }
-                return Ok(());
+                return Ok(espeak_src);
             }
         }
     }
@@ -148,8 +292,17 @@ fn bundle_myownllm_sidecar() -> Result<(), Box<dyn std::error::Error>> {
     //    MyOwnMesh sibling — we trust a present sibling and just log its version.
     //    A dev who built the engine wants Myo to use exactly that build.
     if let Some(p) = find_sibling_engine_binary(&crate_dir, exe_suffix) {
+        // The sibling's espeak lives in its crate's `binaries/` (staged by
+        // MyOwnLLM's own build.rs::bundle_espeak): the engine binary is at
+        // `<MyOwnLLM>/src-tauri/target/<profile>/myownllm`, so three parents up
+        // is `src-tauri`, then `binaries`.
+        let espeak_src = p
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(|src_tauri| src_tauri.join("binaries"));
         if up_to_date(&p, &sidecar_path) {
-            return Ok(());
+            return Ok(espeak_src);
         }
         let ver = engine_version(&p).unwrap_or_else(|_| "unknown".into());
         println!(
@@ -161,7 +314,7 @@ fn bundle_myownllm_sidecar() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(want) = &want_rev {
             fs::write(&bundled_rev_sentinel, want)?;
         }
-        return Ok(());
+        return Ok(espeak_src);
     }
 
     // 3. Prebuilt release asset from MyOwnLLM's GitHub Releases. `.myownllm-rev`
@@ -182,8 +335,11 @@ fn bundle_myownllm_sidecar() -> Result<(), Box<dyn std::error::Error>> {
         && fs::read_to_string(&bundled_rev_sentinel)
             .map(|s| s.trim() == tag)
             .unwrap_or(false);
-    if staged_is_tag {
-        return Ok(());
+    // Re-download unless BOTH the engine and its espeak payload are already
+    // staged for this tag — a half-staged state (engine but no espeak) must
+    // repopulate `staging` so we can stage espeak from it.
+    if staged_is_tag && espeak_staged(&bin_dir, &target_triple, exe_suffix) {
+        return Ok(None);
     }
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let staging = out_dir.join("myownllm-staging");
@@ -197,7 +353,8 @@ fn bundle_myownllm_sidecar() -> Result<(), Box<dyn std::error::Error>> {
         sidecar_path.display(),
         fs::metadata(&sidecar_path).map(|m| m.len()).unwrap_or(0)
     );
-    Ok(())
+    // The archive also extracted espeak-ng + espeak-ng-data into `staging`.
+    Ok(Some(staging))
 }
 
 /// Atomic-rename copy that survives Windows `ERROR_SHARING_VIOLATION` (os error
